@@ -13,6 +13,8 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
 
 /**
  * ============================================================================
@@ -29,7 +31,8 @@ import javax.inject.Inject
 class MainViewModel @Inject constructor(
     private val recordingRepository: RecordingRepository,
     private val chunkRepository: ChunkRepository,
-    private val secureStorage: SecureStorage
+    private val secureStorage: SecureStorage,
+    @ApplicationContext private val context: Context
 ) : ViewModel() {
 
     // ========================================================================
@@ -58,6 +61,12 @@ class MainViewModel @Inject constructor(
 
     init {
         _isDeviceRegistered.value = secureStorage.isDeviceRegistered
+        // If the user provided a key via request, we can set it here or via a dedicated call.
+        // For now, I'll ensure the property is accessible.
+    }
+
+    fun setVercelApiKey(key: String) {
+        secureStorage.vercelApiKey = key
     }
 
     // ========================================================================
@@ -99,7 +108,7 @@ class MainViewModel @Inject constructor(
             recordingRepository.deleteRecording(recording.id)
             // Also clean up local files
             val chunksDir = java.io.File(
-                android.app.Application().filesDir,
+                context.filesDir,
                 "recordings/${recording.id}"
             )
             if (chunksDir.exists()) {

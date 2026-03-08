@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import com.elysium.vanguard.recordshield.domain.model.Recording
@@ -43,6 +44,9 @@ fun GalleryScreen(
     onBackClick: () -> Unit,
     onDeleteRecording: (Recording) -> Unit
 ) {
+    val configuration = LocalConfiguration.current
+    val isLargeScreen = configuration.screenWidthDp > 600
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -59,9 +63,9 @@ fun GalleryScreen(
         if (recordings.isEmpty()) {
             EmptyGalleryState()
         } else {
-            // Responsive Grid: 1 column on phone, 2 on tablet/landscape
+            // Responsive Grid: 1 column on outer phone screen, 2-3 on inner screen
             LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 340.dp),
+                columns = GridCells.Fixed(if (isLargeScreen) 2 else 1),
                 contentPadding = PaddingValues(16.dp),
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -73,6 +77,7 @@ fun GalleryScreen(
                 ) { recording ->
                     RecordingCard(
                         recording = recording,
+                        isLargeScreen = isLargeScreen,
                         onClick = { onRecordingClick(recording) },
                         onDelete = { onDeleteRecording(recording) }
                     )
@@ -127,9 +132,11 @@ fun GalleryTopBar(recordingCount: Int, onBackClick: () -> Unit) {
 @Composable
 fun RecordingCard(
     recording: Recording,
+    isLargeScreen: Boolean,
     onClick: () -> Unit,
     onDelete: () -> Unit
 ) {
+    val configuration = LocalConfiguration.current
     val isVideo = recording.type == RecordingType.VIDEO
     val accentColor = if (isVideo) ElectricBlue else DeepPurple
     val typeIcon = if (isVideo) Icons.Default.Videocam else Icons.Default.Mic
@@ -163,7 +170,7 @@ fun RecordingCard(
             )
             .border(1.dp, SubtleBorder, RoundedCornerShape(16.dp))
             .clickable(onClick = onClick)
-            .padding(16.dp)
+            .padding(if (configuration.screenWidthDp > 600) 20.dp else 12.dp)
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically
@@ -172,7 +179,7 @@ fun RecordingCard(
             Box(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier
-                    .size(52.dp)
+                    .size(if (isLargeScreen) 52.dp else 44.dp)
                     .drawBehind {
                         drawCircle(
                             color = accentColor.copy(alpha = 0.15f),
@@ -187,7 +194,7 @@ fun RecordingCard(
                     imageVector = typeIcon,
                     contentDescription = null,
                     tint = accentColor,
-                    modifier = Modifier.size(24.dp)
+                    modifier = Modifier.size(if (isLargeScreen) 24.dp else 20.dp)
                 )
             }
 
@@ -247,7 +254,7 @@ fun RecordingCard(
             // Delete button
             IconButton(onClick = onDelete) {
                 Icon(
-                    imageVector = Icons.Default.DeleteOutline,
+                    imageVector = Icons.Default.Delete,
                     contentDescription = "Delete",
                     tint = TextTertiary
                 )

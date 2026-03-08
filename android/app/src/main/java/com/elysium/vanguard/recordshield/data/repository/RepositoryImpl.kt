@@ -99,18 +99,43 @@ class EvidenceUploadRepositoryImpl @Inject constructor(
         chunkIndex: Int,
         chunkData: ByteArray,
         sha256Hash: String,
-        mimeType: String
+        mimeType: String,
+        durationMs: Int
     ): String {
-        val response = apiClient.uploadChunk(
+        // Phase 6: Top 1% Architecture - Secure 2-Step Direct Upload
+        
+        // 1. Ask Vercel (The Guard) for a Signed URL
+        val signedUrlResponse = apiClient.getUploadUrl(
             deviceId = deviceId,
             deviceToken = deviceToken,
             recordingId = recordingId,
             chunkIndex = chunkIndex,
-            chunkData = chunkData,
-            sha256Hash = sha256Hash,
             mimeType = mimeType
         )
-        return response.chunk?.storagePath ?: ""
+
+        // 2. Upload DIRECTLY to Supabase (Bypassing Vercel limits)
+        apiClient.uploadToSignedUrl(
+            signedUrl = signedUrlResponse.signedUrl,
+            chunkData = chunkData,
+            mimeType = mimeType
+        )
+
+        // 3. Register Chunk in the DB via Vercel (Audit Log)
+        val registerResponse = apiClient.registerChunk(
+            deviceId = deviceId,
+            deviceToken = deviceToken,
+            metadata = com.elysium.vanguard.recordshield.data.remote.ChunkMetadataRequest(
+                recordingId = recordingId,
+                chunkIndex = chunkIndex,
+                storagePath = signedUrlResponse.path,
+                sizeBytes = chunkData.size.toLong(),
+                durationMs = durationMs,
+                mimeType = mimeType,
+                sha256Hash = sha256Hash
+            )
+        )
+
+        return signedUrlResponse.path
     }
 
     override suspend fun createRemoteRecording(

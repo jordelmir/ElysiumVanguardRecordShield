@@ -56,69 +56,71 @@ class EvidenceApiClient(
     }
 
     /**
-     * Upload a single evidence chunk to the Vercel endpoint.
-     *
-     * @param deviceId UUID of the registered device
-     * @param deviceToken API key for authentication
-     * @param recordingId UUID of the recording session
-     * @param chunkIndex Zero-based index of this chunk
-     * @param chunkData Raw binary data of the chunk
-     * @param sha256Hash SHA-256 hex digest of chunkData
-     * @param mimeType MIME type (e.g., "video/mp4", "audio/aac")
-     * @return ChunkUploadResponse with storage path and confirmation
-     * @throws ChunkUploadException on any failure
+     * Fetch a signed upload URL from the Vercel orchestrator.
      */
-    suspend fun uploadChunk(
+    suspend fun getUploadUrl(
         deviceId: String,
         deviceToken: String,
         recordingId: String,
         chunkIndex: Int,
-        chunkData: ByteArray,
-        sha256Hash: String,
-        mimeType: String = "video/mp4"
-    ): ChunkUploadResponse {
-        val response: HttpResponse = client.post("$baseUrl/api/upload-evidence") {
-            // Why custom headers instead of JSON body: The body IS the binary chunk.
-            // Metadata goes in headers to avoid base64 encoding overhead.
+        mimeType: String
+    ): SignedUrlResponse {
+        val response: HttpResponse = client.post("$baseUrl/api/get-upload-url") {
             header("X-Device-Token", deviceToken)
             header("X-Device-Id", deviceId)
             header("X-Recording-Id", recordingId)
             header("X-Chunk-Index", chunkIndex.toString())
-            header("X-Chunk-Hash", sha256Hash)
+            contentType(ContentType.parse(mimeType))
+        }
+
+        if (response.status != HttpStatusCode.OK) {
+            throw ChunkUploadException("Failed to get signed URL: ${response.bodyAsText()}")
+        }
+
+        return json.decodeFromString<SignedUrlResponse>(response.bodyAsText())
+    }
+
+    /**
+     * Upload binary data directly to Supabase using a signed URL.
+     * Uses PUT as required by Supabase Storage.
+     */
+    suspend fun uploadToSignedUrl(
+        signedUrl: String,
+        chunkData: ByteArray,
+        mimeType: String
+    ) {
+        // IMPORTANT: We use a fresh HttpClient or the existing one? 
+        // Supabase expects a direct PUT to the signed URL.
+        val response: HttpResponse = client.put(signedUrl) {
             contentType(ContentType.parse(mimeType))
             setBody(chunkData)
         }
 
-        val bodyText = response.bodyAsText()
-
-        return when (response.status) {
-            HttpStatusCode.Created -> {
-                json.decodeFromString<ChunkUploadResponse>(bodyText)
-            }
-            HttpStatusCode.Conflict -> {
-                // Chunk already uploaded — treat as success (idempotent)
-                ChunkUploadResponse(
-                    success = true,
-                    chunk = ChunkInfo(
-                        index = chunkIndex,
-                        storagePath = "",
-                        sizeBytes = chunkData.size.toLong(),
-                        sha256Hash = sha256Hash
-                    )
-                )
-            }
-            HttpStatusCode.Unauthorized -> {
-                throw ChunkUploadException("Device authentication failed. Token may be expired.")
-            }
-            HttpStatusCode.UnprocessableEntity -> {
-                throw ChunkUploadException("Integrity check failed. Chunk may be corrupted.")
-            }
-            else -> {
-                throw ChunkUploadException(
-                    "Upload failed with status ${response.status.value}: $bodyText"
-                )
-            }
+        if (response.status != HttpStatusCode.OK && response.status != HttpStatusCode.Created) {
+            throw ChunkUploadException("Direct upload to Supabase failed: ${response.status.value}")
         }
+    }
+
+    /**
+     * Register chunk metadata in the database after successful storage upload.
+     */
+    suspend fun registerChunk(
+        deviceId: String,
+        deviceToken: String,
+        metadata: ChunkMetadataRequest
+    ): RegisterChunkResponse {
+        val response: HttpResponse = client.post("$baseUrl/api/register-chunk") {
+            header("X-Device-Token", deviceToken)
+            header("X-Device-Id", deviceId)
+            contentType(ContentType.Application.Json)
+            setBody(json.encodeToString(ChunkMetadataRequest.serializer(), metadata))
+        }
+
+        if (response.status != HttpStatusCode.Created) {
+            throw ChunkUploadException("Failed to register chunk: ${response.bodyAsText()}")
+        }
+
+        return json.decodeFromString<RegisterChunkResponse>(response.bodyAsText())
     }
 
     /**
@@ -169,6 +171,31 @@ data class ChunkInfo(
     val sizeBytes: Long = 0,
     val sha256Hash: String = "",
     val uploadedAt: String? = null
+)
+
+@Serializable
+data class SignedUrlResponse(
+    val signedUrl: String,
+    val token: String? = null,
+    val path: String
+)
+
+@Serializable
+data class ChunkMetadataRequest(
+    val recordingId: String,
+    val chunkIndex: Int,
+    val storagePath: String,
+    val sizeBytes: Long,
+    val durationMs: Int,
+    val mimeType: String,
+    val sha256Hash: String
+)
+
+@Serializable
+data class RegisterChunkResponse(
+    val success: Boolean,
+    val chunkId: String,
+    val message: String
 )
 
 @Serializable

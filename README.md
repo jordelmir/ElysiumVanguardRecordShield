@@ -11,119 +11,103 @@
 
 ## 🎯 What Is This?
 
-Record Shield captures audio and video evidence and uploads it to the cloud **in real-time fragments (every 5-10 seconds)**. If the recording device is destroyed, confiscated, or powered off, all previously uploaded fragments survive safely in Supabase Storage.
+Record Shield captures audio and video evidence and uploads it to the cloud **in real-time fragments (every 10 seconds)**. Even if the device is destroyed, confiscated, or the screen is locked, the recording process continues uninterrupted, and previously uploaded segments remain secure in Supabase Storage.
 
 ### Key Features
 
-- 🔴 **1-Click Recording** — Massive button for instant capture
-- 🔒 **Anti-Sabotage Lock** — PIN-protected; back button disabled during recording
-- ☁️ **Real-Time Chunking** — Evidence uploaded every 5-10 seconds
-- 📱 **Screen-Off Recording** — Foreground Service + WakeLock persistence
-- 🗂️ **Internal Sandbox** — Zero external storage; invisible to galleries/USB
-- 🎬 **Secure Gallery** — PIN-gated playback with full-screen stretched video
-- 🎨 **Neo-Futuristic UI** — Glassmorphism, Matrix Rain, animated glow effects
+- 🔴 **1-Click Recording** — Instant start/stop with minimal latency.
+- 🔒 **Zero-Interruption Background Video** — Continuous recording even when the screen is off or locked via "Mock Surface Persistence".
+- ☁️ **Real-Time Cloud Sync** — Fragments uploaded via Vercel-mediated signed URLs to Supabase.
+- 📱 **Anti-Sabotage Lock** — PIN-protected UI; back button and system gestures disabled during active recording.
+- 🎨 **Premium Neo-Futuristic UI** — Matrix-inspired animations, glassmorphism, and high-contrast dark theme.
+- 🎬 **Internal Secure Gallery** — Encrypted local storage; playback is PIN-gated.
 
 ---
 
 ## 🏗 Architecture
 
+```mermaid
+graph TD
+    A[Android App] -- Capture --> B[Recording Service]
+    B -- Chunking --> C[Local Cache]
+    C -- Req Signed URL --> D[Vercel API]
+    D -- Sign URL --> E[Supabase Storage]
+    B -- Direct PUT --> E
+    D -- Metadata --> F[Supabase DB]
 ```
-Android (Kotlin/Compose)  →  Vercel Edge (TypeScript)  →  Supabase (PostgreSQL + Storage)
-     CameraX + Media3            /api/upload-evidence          evidence-vault bucket
-```
-
-See [`skills.md`](./skills.md) for the complete data flow documentation.
 
 ---
 
 ## 📂 Project Structure
 
-```
-ElysiumVanguardRecordShield/
-├── android/                  # Native Android app (Kotlin/Compose)
-│   ├── app/
-│   │   ├── build.gradle.kts  # Dependencies: CameraX, Media3, Ktor, Hilt, Room
-│   │   └── src/main/
-│   │       ├── AndroidManifest.xml
-│   │       └── java/com/elysium/vanguard/recordshield/
-│   ├── build.gradle.kts      # Project-level (AGP 8.7, Kotlin 2.1, KSP)
-│   └── settings.gradle.kts
-├── vercel/                   # Serverless API
-│   ├── api/
-│   │   └── upload-evidence.ts    # Chunk upload endpoint
-│   ├── package.json
-│   ├── vercel.json
-│   └── tsconfig.json
-├── supabase/
-│   └── migrations/
-│       └── 001_init_evidence_schema.sql  # Tables + RLS + Storage bucket
-├── skills.md                 # Data flow documentation
-└── README.md                 # This file
-```
+- **`/android`**: Jetpack Compose application.
+  - `RecordingService`: Handles foreground lifecycle, CameraX integration, and background persistence.
+  - `EvidenceUploadRepository`: Manages the direct-to-cloud upload pipeline.
+- **`/vercel`**: API Gateway for security and metadata registration.
+  - `/api/get-upload-url`: Generates pre-signed Supabase URLs.
+  - `/api/register-chunk`: Finalizes metadata in the database.
+- **`/supabase`**: Database schema and storage bucket configuration.
 
 ---
 
-## 🚀 Quick Start
+## 🚀 How to Build & Compile
 
-### 1. Supabase Setup
+### Prerequisites
 
-```bash
-# Apply the migration to your Supabase project
-# Option A: Via Supabase CLI
-supabase db push
+- Android Studio Ladybug (or newer)
+- JDK 17+
+- Vercel CLI (for backend deployment)
 
-# Option B: Copy/paste the SQL from:
-# supabase/migrations/001_init_evidence_schema.sql
-# into the Supabase Dashboard → SQL Editor
-```
+### 1. Backend Setup
 
-### 2. Vercel Deployment
+1. Deploy the Supabase schema from `supabase/migrations/001_init_evidence_schema.sql`.
+2. Deploy the Vercel project:
 
-```bash
-cd vercel/
-npm install
+    ```bash
+    cd vercel
+    vercel --prod
+    ```
 
-# Set environment variables
-# In Vercel Dashboard → Settings → Environment Variables:
-#   SUPABASE_URL = https://rohninosfwpmjmcklhbh.supabase.co
-#   SUPABASE_SERVICE_ROLE_KEY = (from Supabase Dashboard → API)
+3. Configure environment variables in Vercel: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`.
 
-# Deploy
-npx vercel --prod
-```
+### 2. Android App Compilation
 
-### 3. Android
+1. Open the `android` folder in Android Studio.
+2. Sync Gradle dependencies.
+3. Build the APK:
 
-Open `android/` in Android Studio. Sync Gradle. Build and run.
+    ```bash
+    ./gradlew assembleDebug
+    ```
 
-Update the Vercel API URL in `app/build.gradle.kts`:
-
-```kotlin
-buildConfigField("String", "VERCEL_API_URL", "\"https://your-project.vercel.app\"")
-```
+4. Install the generated APK on your device.
 
 ---
 
 ## 🔐 Security Model
 
-| Layer | Protection |
-|-------|-----------|
-| **Device → Vercel** | HTTPS + Device Token + SHA-256 integrity |
-| **Vercel → Supabase** | Service Role Key (server-side only) |
-| **Supabase Storage** | Private bucket, RLS-protected |
-| **Local Storage** | App sandbox (invisible to OS) |
-| **App Access** | PIN/password lock |
-| **Evidence Immutability** | No UPDATE/DELETE policies in RLS |
+| Component | Description |
+|-----------|-------------|
+| **Transmission** | TLS 1.3 / HTTPS for all cloud communication. |
+| **Integrity** | SHA-256 hashing for every evidence chunk. |
+| **Persistence** | Foreground Service + WakeLock ensures recording doesn't stop on screen lock. |
+| **Isolation** | Evidence stored in `filesDir` (internal) - invisible to other apps or gallery. |
 
 ---
 
-## 📋 Development Phases
+## 📋 Development Status
 
-- [x] **Phase 1:** Infrastructure (Supabase + Vercel + Android scaffold)
-- [ ] **Phase 2:** Core Services (Recording, Chunking, Uploading)
-- [ ] **Phase 3:** Security (PIN lock, anti-sabotage mechanisms)
-- [ ] **Phase 4:** UI/UX (Neo-futuristic design system)
-- [ ] **Phase 5:** Integration (Widget, optimization, full docs)
+- [x] **Phase 1-4:** core infrastructure and UI.
+- [x] **Phase 5.1:** Zero-Interruption Background Recording (FIXED).
+- [x] **Phase 6:** Direct Cloud Sync with Vercel/Supabase (FIXED).
+
+---
+
+## 🤝 Credits & Development
+
+**Lead Developer & Visionary:** [Jordelmir](https://github.com/jordelmir)
+
+Special thanks to the Elysium Vanguard engineering workflow for the high-end implementation of the Zero-Interruption recording logic and the secure cloud synchronization pipeline.
 
 ---
 

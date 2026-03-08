@@ -4,7 +4,10 @@ import android.app.*
 import android.content.*
 import android.os.*
 import android.util.Log
+import android.content.pm.ServiceInfo
+import android.os.Build
 import androidx.camera.core.*
+import androidx.camera.core.resolutionselector.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.*
 import androidx.core.app.NotificationCompat
@@ -19,7 +22,12 @@ import com.elysium.vanguard.recordshield.domain.repository.ChunkRepository
 import com.elysium.vanguard.recordshield.domain.repository.RecordingRepository
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.*
+import kotlin.coroutines.resume
+import androidx.lifecycle.LifecycleService
+import androidx.annotation.CallSuper
 import java.io.File
 import java.io.FileInputStream
 import java.security.MessageDigest
@@ -52,7 +60,7 @@ import javax.inject.Inject
  * ============================================================================
  */
 @AndroidEntryPoint
-class RecordingService : Service() {
+class RecordingService : LifecycleService() {
 
     companion object {
         private const val TAG = "RecordingService"
@@ -73,8 +81,14 @@ class RecordingService : Service() {
         private val _elapsedSeconds = MutableStateFlow(0L)
         val elapsedSeconds: StateFlow<Long> = _elapsedSeconds
 
-        // Static provider for Live Preview
-        var previewSurfaceProvider: Preview.SurfaceProvider? = null
+        private val _currentRecordingType = MutableStateFlow<RecordingType?>(null)
+        val currentRecordingType: StateFlow<RecordingType?> = _currentRecordingType
+
+        // Static provider for Live Preview (Reactive)
+        private val _previewSurfaceProvider = MutableStateFlow<Preview.SurfaceProvider?>(null)
+        var previewSurfaceProvider: Preview.SurfaceProvider?
+            get() = _previewSurfaceProvider.value
+            set(value) { _previewSurfaceProvider.value = value }
 
         fun startVideoRecording(context: Context) {
             val intent = Intent(context, RecordingService::class.java).apply {
@@ -112,10 +126,72 @@ class RecordingService : Service() {
     private var mediaRecorder: android.media.MediaRecorder? = null
     private var isAudioMode = false
     private var videoCapture: VideoCapture<Recorder>? = null
+    private var cameraProvider: ProcessCameraProvider? = null
+    private var previewUseCase: Preview? = null
+    private var activeRecording: androidx.camera.video.Recording? = null
+    private var isScreenOff = false
+    
+    // Mock Surface for Zero-Interruption background recording
+    private var mockSurfaceTexture: android.graphics.SurfaceTexture? = null
+    private var mockSurface: android.view.Surface? = null
+    private val mockSurfaceProvider = Preview.SurfaceProvider { request ->
+        if (mockSurfaceTexture == null) {
+            mockSurfaceTexture = android.graphics.SurfaceTexture(0).apply {
+                setDefaultBufferSize(request.resolution.width, request.resolution.height)
+            }
+            mockSurface = android.view.Surface(mockSurfaceTexture)
+        }
+        request.provideSurface(mockSurface!!, ContextCompat.getMainExecutor(this@RecordingService)) {
+            // No-op cleanup
+        }
+    }
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    private val screenStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_OFF -> {
+                    isScreenOff = true
+                    updateCameraBinding()
+                }
+                Intent.ACTION_SCREEN_ON -> {
+                    isScreenOff = false
+                    updateCameraBinding()
+                }
+            }
+        }
+    }
+
+    @CallSuper
+    override fun onCreate() {
+        super.onCreate()
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
+        }
+        registerReceiver(screenStateReceiver, filter)
+
+        // Observe surface provider changes
+        serviceScope.launch {
+            _previewSurfaceProvider.collect {
+                updateCameraBinding()
+            }
+        }
+    }
+
+    @CallSuper
+    override fun onBind(intent: Intent): IBinder? {
+        super.onBind(intent)
+        return null
+    }
+
+    @Suppress("DEPRECATION")
+    @CallSuper
+    override fun onStart(intent: Intent?, startId: Int) {
+        super.onStart(intent, startId)
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        super.onStartCommand(intent, flags, startId)
         when (intent?.action) {
             ACTION_START_VIDEO -> startRecording(RecordingType.VIDEO)
             ACTION_START_AUDIO -> startRecording(RecordingType.AUDIO)
@@ -140,7 +216,16 @@ class RecordingService : Service() {
         }
 
         // Start foreground immediately to avoid ANR on Android 12+
-        startForeground(NOTIFICATION_ID, buildNotification("Preparing recording..."))
+        // Explicitly declare camera and microphone types for Android 14+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID, 
+                buildNotification("Preparing recording..."),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, buildNotification("Preparing recording..."))
+        }
 
         // Acquire WakeLock
         acquireWakeLock()
@@ -153,6 +238,7 @@ class RecordingService : Service() {
         currentRecording = recording
         chunkIndex = 0
         isAudioMode = type == RecordingType.AUDIO
+        _currentRecordingType.value = type
 
         serviceScope.launch {
             recordingRepository.createRecording(recording)
@@ -162,12 +248,105 @@ class RecordingService : Service() {
 
             // Start the timer
             startTimer()
+            
+            // Setup Camera if possible (both Audio and Video should try to show preview if available)
+            setupCamera()
 
             // Start chunked recording
             if (isAudioMode) {
                 startAudioChunking(recording)
             } else {
                 startVideoChunking(recording)
+            }
+        }
+    }
+
+    private fun setupCamera() {
+        if (cameraProvider != null) return
+        
+        serviceScope.launch(Dispatchers.Main) {
+            cameraProvider = withContext(Dispatchers.IO) {
+                ProcessCameraProvider.getInstance(this@RecordingService).get()
+            }
+            
+            val recorder = Recorder.Builder()
+                .setQualitySelector(QualitySelector.from(Quality.HD, FallbackStrategy.lowerQualityOrHigherThan(Quality.SD)))
+                .setExecutor(Executors.newSingleThreadExecutor())
+                .build()
+            
+            videoCapture = VideoCapture.withOutput(recorder)
+            updateCameraBinding()
+        }
+    }
+
+    private fun updateCameraBinding() {
+        val provider = cameraProvider ?: return
+        if (!_isRecording.value && !isAudioMode) {
+            // Service is active but not recording? Just clear if screen is off
+            if (isScreenOff) provider.unbindAll()
+            return
+        }
+
+        serviceScope.launch(Dispatchers.Main) {
+            try {
+                val uiSurfaceProvider = _previewSurfaceProvider.value
+                val videoUseCase = if (isAudioMode) null else videoCapture
+                
+                // CRITICAL: Decide which surface provider to use. 
+                // We PREFER the UI surface, but fallback to Mock Surface if UI is gone/screen is off.
+                val activeSurfaceProvider = if (!isScreenOff && uiSurfaceProvider != null) {
+                    uiSurfaceProvider
+                } else {
+                    mockSurfaceProvider
+                }
+
+                // If we are already bound to the correct set, don't re-bind to avoid flicker or reset
+                val currentLifecycleOwner = this@RecordingService
+                
+                // Re-prepare Preview with the chosen provider
+                if (previewUseCase == null) {
+                    val resolutionSelector = ResolutionSelector.Builder()
+                        .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+                        .build()
+
+                    previewUseCase = Preview.Builder()
+                        .setResolutionSelector(resolutionSelector)
+                        .build()
+                }
+                previewUseCase?.setSurfaceProvider(activeSurfaceProvider)
+
+                // Atomic Binding Check: Ensure all necessary use cases are bound without unbinding first
+                val useCasesToBind = mutableListOf<UseCase>()
+                previewUseCase?.let { useCasesToBind.add(it) }
+                if (videoUseCase != null) {
+                    useCasesToBind.add(videoUseCase)
+                }
+
+                if (useCasesToBind.isNotEmpty()) {
+                    try {
+                        // Atomic Binding: Ensure all necessary use cases are bound.
+                        // We use an explicit Typed Array to avoid Kotlin vararg inference issues.
+                        val useCaseArray = useCasesToBind.toTypedArray()
+                        provider.bindToLifecycle(
+                            currentLifecycleOwner,
+                            CameraSelector.DEFAULT_BACK_CAMERA,
+                            *useCaseArray
+                        )
+                        Log.d(TAG, "Camera Atomic Binding: ${if (isScreenOff) "BACKGROUND" else "UI"} mode active")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Atomic bind failed - attempting standard recovery", e)
+                        // Emergency recovery: Some sensors can't handle live binding switches
+                        provider.unbindAll()
+                        provider.bindToLifecycle(
+                            currentLifecycleOwner,
+                            CameraSelector.DEFAULT_BACK_CAMERA,
+                            *useCasesToBind.toTypedArray()
+                        )
+                    }
+                }
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to update camera binding", e)
             }
         }
     }
@@ -182,21 +361,35 @@ class RecordingService : Service() {
                 val chunkFile = createChunkFile(recording.id, chunkIndex, "m4a")
                 try {
                     recordAudioChunk(chunkFile)
-                    // Compute hash and register chunk
-                    val hash = computeSha256(chunkFile)
-                    val chunk = EvidenceChunk(
-                        recordingId = recording.id,
-                        chunkIndex = chunkIndex,
-                        localPath = chunkFile.absolutePath,
-                        sizeBytes = chunkFile.length(),
-                        durationMs = CHUNK_DURATION_MS.toInt(),
-                        mimeType = "audio/mp4",
-                        sha256Hash = hash
-                    )
-                    chunkRepository.insertChunk(chunk)
-                    Log.i(TAG, "Audio chunk $chunkIndex saved: ${chunkFile.length()} bytes")
-                    chunkIndex++
-                    updateNotification("Recording audio • Chunk $chunkIndex saved")
+                    
+                    // Professional Sync Pulse: Wait for OS to flush file
+                    var finalSize = 0L
+                    var retries = 0
+                    while (retries < 5 && finalSize == 0L) {
+                        delay(200)
+                        finalSize = chunkFile.length()
+                        retries++
+                    }
+
+                    if (chunkFile.exists() && finalSize > 0) {
+                        val hash = computeSha256(chunkFile)
+                        val chunk = EvidenceChunk(
+                            recordingId = recording.id,
+                            chunkIndex = chunkIndex,
+                            localPath = chunkFile.absolutePath,
+                            sizeBytes = finalSize,
+                            durationMs = CHUNK_DURATION_MS.toInt(),
+                            mimeType = "audio/mp4",
+                            sha256Hash = hash
+                        )
+                        chunkRepository.insertChunk(chunk)
+                        Log.i(TAG, "Audio chunk $chunkIndex saved: $finalSize bytes")
+                        chunkIndex++
+                        updateNotification("Recording audio • Chunk $chunkIndex saved")
+                    } else {
+                        Log.w(TAG, "Audio chunk $chunkIndex was empty after sync - discarding")
+                        chunkFile.delete()
+                    }
                 } catch (e: Exception) {
                     Log.e(TAG, "Audio chunk $chunkIndex failed", e)
                 }
@@ -214,20 +407,35 @@ class RecordingService : Service() {
                 val chunkFile = createChunkFile(recording.id, chunkIndex, "mp4")
                 try {
                     recordVideoChunk(chunkFile)
-                    val hash = computeSha256(chunkFile)
-                    val chunk = EvidenceChunk(
-                        recordingId = recording.id,
-                        chunkIndex = chunkIndex,
-                        localPath = chunkFile.absolutePath,
-                        sizeBytes = chunkFile.length(),
-                        durationMs = CHUNK_DURATION_MS.toInt(),
-                        mimeType = "video/mp4",
-                        sha256Hash = hash
-                    )
-                    chunkRepository.insertChunk(chunk)
-                    Log.i(TAG, "Video chunk $chunkIndex saved: ${chunkFile.length()} bytes")
-                    chunkIndex++
-                    updateNotification("Recording video • Chunk $chunkIndex saved")
+                    
+                    // Professional Sync Pulse: Wait for OS to flush video file (larger files need more time)
+                    var finalSize = 0L
+                    var retries = 0
+                    while (retries < 8 && finalSize == 0L) {
+                        delay(200)
+                        finalSize = chunkFile.length()
+                        retries++
+                    }
+
+                    if (chunkFile.exists() && finalSize > 0) {
+                        val hash = computeSha256(chunkFile)
+                        val chunk = EvidenceChunk(
+                            recordingId = recording.id,
+                            chunkIndex = chunkIndex,
+                            localPath = chunkFile.absolutePath,
+                            sizeBytes = finalSize,
+                            durationMs = CHUNK_DURATION_MS.toInt(),
+                            mimeType = "video/mp4",
+                            sha256Hash = hash
+                        )
+                        chunkRepository.insertChunk(chunk)
+                        Log.i(TAG, "Video chunk $chunkIndex saved: $finalSize bytes")
+                        chunkIndex++
+                        updateNotification("Recording video • Chunk $chunkIndex saved")
+                    } else {
+                        Log.w(TAG, "Video chunk $chunkIndex was empty after sync - discarding")
+                        chunkFile.delete()
+                    }
                 } catch (e: Exception) {
                     Log.e(TAG, "Video chunk $chunkIndex failed", e)
                 }
@@ -240,30 +448,32 @@ class RecordingService : Service() {
      * Suspends for CHUNK_DURATION_MS then stops recording.
      */
     private suspend fun recordAudioChunk(outputFile: File) {
-        withContext(Dispatchers.Main) {
+        try {
             mediaRecorder = android.media.MediaRecorder(this@RecordingService).apply {
                 setAudioSource(android.media.MediaRecorder.AudioSource.MIC)
                 setOutputFormat(android.media.MediaRecorder.OutputFormat.MPEG_4)
                 setAudioEncoder(android.media.MediaRecorder.AudioEncoder.AAC)
-                setAudioEncodingBitRate(128_000) // 128 kbps — good quality, small chunks
+                setAudioEncodingBitRate(128_000)
                 setAudioSamplingRate(44_100)
                 setMaxDuration(CHUNK_DURATION_MS.toInt())
                 setOutputFile(outputFile.absolutePath)
                 prepare()
                 start()
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "MediaRecorder failed to start", e)
+            return
         }
-        // Wait for chunk duration
-        delay(CHUNK_DURATION_MS)
-        withContext(Dispatchers.Main) {
-            try {
-                mediaRecorder?.stop()
-            } catch (e: Exception) {
-                Log.w(TAG, "MediaRecorder stop error (may be normal)", e)
-            }
-            mediaRecorder?.release()
-            mediaRecorder = null
+        
+        var timePassed = 0L
+        while (timePassed < CHUNK_DURATION_MS && _isRecording.value && currentCoroutineContext().isActive) {
+            delay(100)
+            timePassed += 100
         }
+
+        try { mediaRecorder?.stop() } catch (_: Exception) {}
+        try { mediaRecorder?.release() } catch (_: Exception) {}
+        mediaRecorder = null
     }
 
     /**
@@ -271,85 +481,62 @@ class RecordingService : Service() {
      * This method uses the CameraX recording API with a file output.
      */
     private suspend fun recordVideoChunk(outputFile: File) {
-        // For video, we use CameraX's VideoCapture use case.
-        // The actual CameraX binding is done on the Main thread.
-        withContext(Dispatchers.Main) {
-            val cameraProvider = ProcessCameraProvider.getInstance(this@RecordingService).get()
-            val recorder = Recorder.Builder()
-                .setQualitySelector(QualitySelector.from(Quality.HD))
-                .setExecutor(Executors.newSingleThreadExecutor())
-                .build()
-            
-            val videoCaptureUseCase = VideoCapture.withOutput(recorder)
-            videoCapture = videoCaptureUseCase
-            // Setup Preview if provider is available
-            val preview = if (previewSurfaceProvider != null) {
-                Preview.Builder().build().also {
-                    it.setSurfaceProvider(previewSurfaceProvider)
-                }
-            } else null
-
-            try {
-                cameraProvider.unbindAll()
-                if (preview != null) {
-                    cameraProvider.bindToLifecycle(
-                        androidx.lifecycle.ProcessLifecycleOwner.get(),
-                        CameraSelector.DEFAULT_BACK_CAMERA,
-                        preview,
-                        videoCaptureUseCase
-                    )
-                } else {
-                    cameraProvider.bindToLifecycle(
-                        androidx.lifecycle.ProcessLifecycleOwner.get(),
-                        CameraSelector.DEFAULT_BACK_CAMERA,
-                        videoCaptureUseCase
-                    )
-                }
-
-                val fileOutputOptions = FileOutputOptions.Builder(outputFile).build()
-                val recording = recorder
-                    .prepareRecording(this@RecordingService, fileOutputOptions)
-                    .apply {
-                        if (ActivityCompat.checkSelfPermission(this@RecordingService, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                            withAudioEnabled()
-                        }
-                    }
-                    .start(ContextCompat.getMainExecutor(this@RecordingService)) { event: VideoRecordEvent ->
-                        if (event is VideoRecordEvent.Finalize) {
-                            if (event.hasError()) {
-                                Log.e(TAG, "Video chunk error: ${event.error}")
-                            }
-                        }
-                    }
-
-                // Record for chunk duration then stop
-                delay(CHUNK_DURATION_MS)
-                recording.stop()
-                // Small delay for finalization
-                delay(500)
-            } finally {
-                cameraProvider.unbindAll()
-            }
-
+        val recorder = videoCapture?.output ?: throw IllegalStateException("Camera not setup")
+        
+        val finalizeDeferred = CompletableDeferred<Unit>()
+        val fileOutputOptions = FileOutputOptions.Builder(outputFile).build()
+        var recordingBuilder = recorder.prepareRecording(this@RecordingService, fileOutputOptions)
+        
+        if (ActivityCompat.checkSelfPermission(this@RecordingService, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            recordingBuilder = recordingBuilder.withAudioEnabled()
         }
+        
+        val activeRec = recordingBuilder.start(ContextCompat.getMainExecutor(this@RecordingService)) { event: VideoRecordEvent ->
+            if (event is VideoRecordEvent.Finalize) {
+                if (event.hasError()) {
+                    Log.e(TAG, "Video chunk error: ${event.error}")
+                }
+                finalizeDeferred.complete(Unit)
+            }
+        }
+        activeRecording = activeRec
+        
+        var timePassed = 0L
+        while (timePassed < CHUNK_DURATION_MS && _isRecording.value && currentCoroutineContext().isActive) {
+            delay(100)
+            timePassed += 100
+        }
+        
+        activeRec.stop()
+        activeRecording = null
+        finalizeDeferred.await()
     }
 
     private fun stopRecordingInternal() {
         if (!_isRecording.value) return
 
         _isRecording.value = false
+        _currentRecordingType.value = null
         timerJob?.cancel()
-        chunkJob?.cancel()
 
-        // Release MediaRecorder if audio mode
-        try {
-            mediaRecorder?.stop()
-            mediaRecorder?.release()
-        } catch (_: Exception) {}
-        mediaRecorder = null
-
-        // Update recording status
+        // We do NOT cancel chunkJob immediately. 
+        // We set _isRecording.value to false, which signals the delay loops to finish, stops the recorder,
+        // and safely waits for VideoRecordEvent.Finalize to complete.
         serviceScope.launch {
+            chunkJob?.join()
+            
+            withContext(Dispatchers.Main) {
+                try {
+                    cameraProvider?.unbindAll()
+                    Log.i(TAG, "Camera unbound successfully")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error unbinding camera", e)
+                }
+                cameraProvider = null
+                videoCapture = null
+                previewSurfaceProvider = null // Crucial: clear preview to avoid black screen on next run
+            }
+
             val current = currentRecording
             if (current != null) {
                 recordingRepository.updateRecordingStatus(
@@ -359,18 +546,28 @@ class RecordingService : Service() {
                 )
             }
             _currentRecordingId.value = null
-        }
 
-        releaseWakeLock()
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+            releaseWakeLock()
+            
+            // Cleanup Mock Surface
+            mockSurface?.release()
+            mockSurface = null
+            mockSurfaceTexture?.release()
+            mockSurfaceTexture = null
+
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
     }
 
+    @CallSuper
     override fun onDestroy() {
+        try { unregisterReceiver(screenStateReceiver) } catch (_: Exception) {}
         super.onDestroy()
         // If destroyed without proper stop, mark as interrupted
         if (_isRecording.value) {
             _isRecording.value = false
+            _currentRecordingType.value = null
             serviceScope.launch {
                 val current = currentRecording
                 if (current != null) {
@@ -384,6 +581,11 @@ class RecordingService : Service() {
         }
         timerJob?.cancel()
         chunkJob?.cancel()
+        
+        // Stop CameraX
+        try { activeRecording?.stop() } catch (_: Exception) {}
+        try { cameraProvider?.unbindAll() } catch (_: Exception) {}
+        
         releaseWakeLock()
         serviceScope.cancel()
     }

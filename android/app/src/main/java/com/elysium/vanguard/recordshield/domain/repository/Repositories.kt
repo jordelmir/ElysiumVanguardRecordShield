@@ -65,7 +65,8 @@ interface EvidenceUploadRepository {
         chunkIndex: Int,
         chunkData: ByteArray,
         sha256Hash: String,
-        mimeType: String
+        mimeType: String,
+        durationMs: Int
     ): String
 
     /**

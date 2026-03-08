@@ -11,6 +11,7 @@ import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import java.io.File
 import java.util.concurrent.TimeUnit
+import com.elysium.vanguard.recordshield.data.local.SecureStorage
 
 /**
  * ============================================================================
@@ -37,7 +38,8 @@ class UploadWorker @AssistedInject constructor(
     @Assisted appContext: Context,
     @Assisted workerParams: WorkerParameters,
     private val chunkRepository: ChunkRepository,
-    private val uploadRepository: EvidenceUploadRepository
+    private val uploadRepository: EvidenceUploadRepository,
+    private val secureStorage: SecureStorage
 ) : CoroutineWorker(appContext, workerParams) {
 
     companion object {
@@ -98,27 +100,32 @@ class UploadWorker @AssistedInject constructor(
         }
     }
 
-    override suspend fun doWork(): Result {
+    override suspend fun doWork(): Result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
         Log.i(TAG, "UploadWorker started — scanning for pending chunks")
 
         val pendingChunks = chunkRepository.getPendingChunks()
         if (pendingChunks.isEmpty()) {
             Log.i(TAG, "No pending chunks to upload")
-            return Result.success()
+            return@withContext Result.success()
         }
 
         Log.i(TAG, "Found ${pendingChunks.size} pending chunks to upload")
 
-        // TODO: Read device credentials from EncryptedSharedPreferences
-        // For now, use placeholder values that will be replaced in Phase 3
-        val deviceId = "device-placeholder"
-        val deviceToken = "token-placeholder"
+        // Phase 6: Top 1% Architecture - Secure Credentials from Hardware Vault
+        val deviceId = secureStorage.deviceId ?: run {
+            Log.e(TAG, "Device ID not found in SecureStorage")
+            return@withContext Result.failure()
+        }
+        val deviceToken = secureStorage.deviceToken ?: run {
+            Log.e(TAG, "Device Token not found in SecureStorage")
+            return@withContext Result.failure()
+        }
 
         var failedCount = 0
 
         for (chunk in pendingChunks) {
             try {
-                // Mark as uploading
+                // Mark as UPLOADING
                 chunkRepository.updateChunkUploadStatus(chunk.id, UploadStatus.UPLOADING)
 
                 // Read chunk file
@@ -131,7 +138,7 @@ class UploadWorker @AssistedInject constructor(
 
                 val chunkData = file.readBytes()
 
-                // Upload to Vercel
+                // Phase 6: Two-step upload: Vercel Orchestration -> Supabase direct PUT -> Vercel Registration
                 val storagePath = uploadRepository.uploadChunk(
                     deviceId = deviceId,
                     deviceToken = deviceToken,
@@ -139,28 +146,36 @@ class UploadWorker @AssistedInject constructor(
                     chunkIndex = chunk.chunkIndex,
                     chunkData = chunkData,
                     sha256Hash = chunk.sha256Hash,
-                    mimeType = chunk.mimeType
+                    mimeType = chunk.mimeType,
+                    durationMs = chunk.durationMs
                 )
 
-                // Mark as uploaded
+                // Mark as UPLOADED in local database
                 chunkRepository.updateChunkUploadStatus(
                     chunk.id,
                     UploadStatus.UPLOADED,
                     storagePath
                 )
 
-                Log.i(TAG, "Chunk ${chunk.chunkIndex} uploaded successfully → $storagePath")
+                // REGLA DE ORO ANTI-PÉRDIDA:
+                // Only delete local file if the upload process (including registration) succeeded.
+                if (file.delete()) {
+                    Log.i(TAG, "Chunk ${chunk.chunkIndex} uploaded successfully → Purged local file")
+                } else {
+                    Log.w(TAG, "Chunk ${chunk.chunkIndex} uploaded but could not delete local file at ${file.absolutePath}")
+                }
 
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to upload chunk ${chunk.chunkIndex}", e)
                 chunkRepository.updateChunkUploadStatus(chunk.id, UploadStatus.FAILED)
                 failedCount++
+                // DO NOT delete local file on failure — it stays for retry.
             }
         }
 
-        return if (failedCount > 0) {
+        if (failedCount > 0) {
             Log.w(TAG, "$failedCount chunks failed — will retry")
-            Result.retry() // Triggers exponential backoff
+            Result.retry()
         } else {
             Log.i(TAG, "All chunks uploaded successfully")
             Result.success()

@@ -28,9 +28,15 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.widget.Toast
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.ui.viewinterop.AndroidView
 import com.elysium.vanguard.recordshield.service.RecordingService
@@ -46,6 +52,7 @@ import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.activity.compose.BackHandler
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.elysium.vanguard.recordshield.domain.model.RecordingType
 
 /**
  * ============================================================================
@@ -66,6 +73,18 @@ fun HomeScreen(
     val context = LocalContext.current
     val isRecording by RecordingService.isRecording.collectAsState()
     val elapsedSeconds by RecordingService.elapsedSeconds.collectAsState()
+    val currentType by RecordingService.currentRecordingType.collectAsState()
+    val haptics = LocalHapticFeedback.current
+    val configuration = LocalConfiguration.current
+    val isLargeScreen = configuration.screenWidthDp > 600
+    val screenWidth = configuration.screenWidthDp.dp
+    val scrollState = rememberScrollState()
+
+    // Design Tokens - Scaled for Foldables
+    val mainPadding = if (isLargeScreen) 32.dp else 12.dp
+    val buttonSize = if (isLargeScreen) 220.dp else 150.dp
+    val previewWidthFraction = if (isLargeScreen) 0.6f else 0.5f // Drastically reduced for narrow screens
+    val gridColumns = if (isLargeScreen) 4 else 2
 
     val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
     val isIgnoringBatteryOptimizations = powerManager.isIgnoringBatteryOptimizations(context.packageName)
@@ -84,11 +103,11 @@ fun HomeScreen(
         // Layer 1: Matrix Rain Background (subtle, opacated)
         MatrixRainBackground()
 
-        // Layer 2: Main Content
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(24.dp)
+                .verticalScroll(scrollState)
+                .padding(mainPadding)
                 .statusBarsPadding()
                 .navigationBarsPadding(),
             horizontalAlignment = Alignment.CenterHorizontally
@@ -96,7 +115,7 @@ fun HomeScreen(
             // Top Bar
             TopBar(onNavigateToGallery = onNavigateToGallery)
 
-            Spacer(modifier = Modifier.weight(1f))
+            Spacer(modifier = Modifier.height(24.dp))
 
             // Battery Optimization Warning Card
             if (!isIgnoringBatteryOptimizations) {
@@ -111,24 +130,25 @@ fun HomeScreen(
 
             // Recording Timer (visible during recording)
             if (isRecording) {
-                RecordingTimer(elapsedSeconds = elapsedSeconds)
+                RecordingTimer(elapsedSeconds = elapsedSeconds, isLargeScreen = isLargeScreen)
                 Spacer(modifier = Modifier.height(32.dp))
             }
 
-            // Status Text
+            // LIVELY STATUS TEXT
             Text(
                 text = if (isRecording) "RECORDING IN PROGRESS" else "READY TO RECORD",
                 style = MaterialTheme.typography.labelLarge,
-                letterSpacing = 3.sp,
+                letterSpacing = 2.sp,
                 color = if (isRecording) RecordingRed else MatrixGreen
             )
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
-            // === THE MASSIVE RECORDING BUTTON ===
             RecordButton(
                 isRecording = isRecording,
+                buttonSize = buttonSize,
                 onToggle = {
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                     if (isRecording) {
                         RecordingService.stopRecording(context)
                     } else {
@@ -138,19 +158,26 @@ fun HomeScreen(
             )
 
             if (!isRecording) {
-                Spacer(modifier = Modifier.height(24.dp))
+                Spacer(modifier = Modifier.height(16.dp))
                 ModeSelector(
+                    isLargeScreen = isLargeScreen,
                     onVideoSelected = { RecordingService.startVideoRecording(context) },
                     onAudioSelected = { RecordingService.startAudioRecording(context) }
                 )
             }
 
-            Spacer(modifier = Modifier.height(32.dp))
+            Spacer(modifier = Modifier.height(24.dp))
 
-            // LIVE EVIDENCE PREVIEW (Responsive)
-            LivePreview(isRecording = isRecording)
+            // LIVE EVIDENCE PREVIEW (Controlled Height to prevent overlap)
+            LivePreview(
+                isRecording = isRecording, 
+                recordingType = currentType,
+                modifier = Modifier
+                    .fillMaxWidth(previewWidthFraction)
+                    .height(if (isLargeScreen) 300.dp else 160.dp) // Fixed height is safer than aspectRatio here
+            )
 
-            Spacer(modifier = Modifier.height(32.dp))
+            Spacer(modifier = Modifier.height(24.dp))
 
             // Responsive Status Grid
             val statusItems = remember {
@@ -163,16 +190,16 @@ fun HomeScreen(
             }
 
             LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 150.dp),
-                contentPadding = PaddingValues(horizontal = 24.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                columns = GridCells.Fixed(gridColumns),
+                contentPadding = PaddingValues(horizontal = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 240.dp)
+                    .heightIn(max = 200.dp)
             ) {
                 items(statusItems) { item ->
-                    StatusCardUi(item)
+                    StatusCardUi(item, isLargeScreen)
                 }
             }
 
@@ -182,28 +209,70 @@ fun HomeScreen(
 }
 
 @Composable
-fun LivePreview(isRecording: Boolean) {
+fun LivePreview(isRecording: Boolean, recordingType: RecordingType?, modifier: Modifier = Modifier) {
+    DisposableEffect(Unit) {
+        onDispose {
+            RecordingService.previewSurfaceProvider = null
+        }
+    }
     Box(
-        modifier = Modifier
-            .fillMaxWidth(0.9f)
-            .aspectRatio(16/9f)
+        modifier = modifier
             .clip(RoundedCornerShape(12.dp))
             .background(GlassSurface)
             .border(1.dp, if (isRecording) RecordingRed.copy(alpha = 0.5f) else MatrixGreen.copy(alpha = 0.2f), RoundedCornerShape(12.dp)),
         contentAlignment = Alignment.Center
     ) {
+        // ALWAYS keep AndroidView in the hierarchy so the surface provider survives transitions
+        AndroidView(
+            factory = { ctx ->
+                PreviewView(ctx).apply {
+                    this.scaleType = PreviewView.ScaleType.FILL_CENTER
+                    RecordingService.previewSurfaceProvider = this.surfaceProvider
+                }
+            },
+            modifier = Modifier.fillMaxSize()
+        )
+
         if (isRecording) {
-            AndroidView(
-                factory = { context ->
-                    PreviewView(context).apply {
-                        this.scaleType = PreviewView.ScaleType.FILL_CENTER
-                        RecordingService.previewSurfaceProvider = this.surfaceProvider
+            if (recordingType == RecordingType.AUDIO) {
+                // Dim the camera if it's Audio mode to make it clear we are only recording audio
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.8f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            imageVector = Icons.Default.Mic,
+                            contentDescription = null,
+                            tint = RecordingRed,
+                            modifier = Modifier.size(48.dp)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            "AUDIO RECORDING ACTIVE",
+                            color = RecordingRed,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.sp
+                        )
                     }
-                },
-                modifier = Modifier.fillMaxSize()
+                }
+            }
+
+            // Top-left LIVE badge
+            val infiniteTransition = rememberInfiniteTransition(label = "live_pulse")
+            val pulseScale by infiniteTransition.animateFloat(
+                initialValue = 0.8f,
+                targetValue = 1.2f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(800, easing = LinearOutSlowInEasing),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "pulse_scale"
             )
-            
-            // Overlay
+
             Box(
                 modifier = Modifier
                     .align(Alignment.TopStart)
@@ -213,24 +282,37 @@ fun LivePreview(isRecording: Boolean) {
                     .padding(horizontal = 6.dp, vertical = 2.dp)
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(Color.White))
+                    Box(modifier = Modifier
+                        .size(6.dp)
+                        .graphicsLayer(scaleX = pulseScale, scaleY = pulseScale)
+                        .clip(CircleShape)
+                        .background(Color.White)
+                    )
                     Text("LIVE", color = Color.White, fontSize = 8.sp, fontWeight = FontWeight.Bold)
                 }
             }
         } else {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(
-                    imageVector = Icons.Default.CameraAlt,
-                    contentDescription = null,
-                    tint = MatrixGreen.copy(alpha = 0.2f),
-                    modifier = Modifier.size(32.dp)
-                )
-                Text(
-                    "PREVIEW STANDBY",
-                    color = MatrixGreen.copy(alpha = 0.3f),
-                    fontSize = 10.sp,
-                    letterSpacing = 1.sp
-                )
+            // Standby Overlay
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.6f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        imageVector = Icons.Default.CameraAlt,
+                        contentDescription = null,
+                        tint = MatrixGreen.copy(alpha = 0.5f),
+                        modifier = Modifier.size(32.dp)
+                    )
+                    Text(
+                        "PREVIEW STANDBY",
+                        color = MatrixGreen.copy(alpha = 0.5f),
+                        fontSize = 10.sp,
+                        letterSpacing = 1.sp
+                    )
+                }
             }
         }
     }
@@ -244,21 +326,25 @@ data class StatusItem(
 )
 
 @Composable
-fun StatusCardUi(item: StatusItem) {
+fun StatusCardUi(item: StatusItem, isLargeScreen: Boolean) {
+    val iconSize = if (isLargeScreen) 18.dp else 14.dp
+    val labelSize = if (isLargeScreen) 11.sp else 9.sp
+    val valueSize = if (isLargeScreen) 13.sp else 11.sp
+
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(8.dp))
             .background(GlassSurface)
             .border(0.5.dp, GlassBorder, RoundedCornerShape(8.dp))
-            .padding(10.dp)
+            .padding(if (isLargeScreen) 12.dp else 10.dp)
     ) {
         Column {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Icon(item.icon, null, tint = item.color, modifier = Modifier.size(14.dp))
-                Text(item.label, color = item.color, fontSize = 9.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
+                Icon(item.icon, null, tint = item.color, modifier = Modifier.size(iconSize))
+                Text(item.label, color = item.color, fontSize = labelSize, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
             }
             Spacer(modifier = Modifier.height(4.dp))
-            Text(item.value, color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Light)
+            Text(item.value, color = TextSecondary, fontSize = valueSize, fontWeight = FontWeight.Light)
         }
     }
 }
@@ -270,8 +356,12 @@ fun StatusCardUi(item: StatusItem) {
 @Composable
 fun RecordButton(
     isRecording: Boolean,
+    buttonSize: androidx.compose.ui.unit.Dp,
     onToggle: () -> Unit
 ) {
+    val ringSize = buttonSize * 0.85f
+    val innerSize = buttonSize * 0.7f
+    val iconSize = if (buttonSize > 180.dp) 56.dp else 40.dp
     // Pulsing glow animation
     val infiniteTransition = rememberInfiniteTransition(label = "glow")
     val glowAlpha by infiniteTransition.animateFloat(
@@ -298,12 +388,12 @@ fun RecordButton(
 
     Box(
         contentAlignment = Alignment.Center,
-        modifier = Modifier.size(200.dp)
+        modifier = Modifier.size(buttonSize)
     ) {
         // Outer glow ring
         Box(
             modifier = Modifier
-                .size(200.dp)
+                .size(buttonSize)
                 .drawBehind {
                     drawCircle(
                         color = buttonColor.copy(alpha = glowAlpha * 0.4f),
@@ -319,7 +409,7 @@ fun RecordButton(
         // Glass border ring
         Box(
             modifier = Modifier
-                .size(170.dp)
+                .size(ringSize)
                 .clip(CircleShape)
                 .border(
                     width = 2.dp,
@@ -339,7 +429,7 @@ fun RecordButton(
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier
-                .size(140.dp)
+                .size(innerSize)
                 .shadow(
                     elevation = 16.dp,
                     shape = CircleShape,
@@ -363,7 +453,7 @@ fun RecordButton(
                     imageVector = Icons.Default.Stop,
                     contentDescription = "Stop Recording",
                     tint = Color.White,
-                    modifier = Modifier.size(56.dp)
+                    modifier = Modifier.size(iconSize)
                 )
             } else {
                 // Shield icon
@@ -371,7 +461,7 @@ fun RecordButton(
                     imageVector = Icons.Default.Shield,
                     contentDescription = "Start Recording",
                     tint = DeepBlack,
-                    modifier = Modifier.size(56.dp)
+                    modifier = Modifier.size(iconSize)
                 )
             }
         }
@@ -474,7 +564,7 @@ fun TopBar(onNavigateToGallery: () -> Unit) {
 // ============================================================================
 
 @Composable
-fun RecordingTimer(elapsedSeconds: Long) {
+fun RecordingTimer(elapsedSeconds: Long, isLargeScreen: Boolean) {
     val hours = elapsedSeconds / 3600
     val minutes = (elapsedSeconds % 3600) / 60
     val seconds = elapsedSeconds % 60
@@ -507,10 +597,10 @@ fun RecordingTimer(elapsedSeconds: Long) {
 
         Text(
             text = String.format("%02d:%02d:%02d", hours, minutes, seconds),
-            fontSize = 48.sp,
+            fontSize = if (isLargeScreen) 56.sp else 36.sp,
             fontWeight = FontWeight.Bold,
             color = TextPrimary,
-            letterSpacing = 4.sp
+            letterSpacing = if (isLargeScreen) 4.sp else 2.sp
         )
     }
 }
@@ -521,17 +611,19 @@ fun RecordingTimer(elapsedSeconds: Long) {
 
 @Composable
 fun ModeSelector(
+    isLargeScreen: Boolean,
     onVideoSelected: () -> Unit,
     onAudioSelected: () -> Unit
 ) {
     Row(
-        horizontalArrangement = Arrangement.spacedBy(16.dp)
+        horizontalArrangement = Arrangement.spacedBy(if (isLargeScreen) 16.dp else 8.dp)
     ) {
         // Video mode
         GlassButton(
             icon = Icons.Default.Videocam,
             label = "VIDEO",
             accentColor = ElectricBlue,
+            isLargeScreen = isLargeScreen,
             onClick = onVideoSelected
         )
 
@@ -540,6 +632,7 @@ fun ModeSelector(
             icon = Icons.Default.Mic,
             label = "AUDIO",
             accentColor = DeepPurple,
+            isLargeScreen = isLargeScreen,
             onClick = onAudioSelected
         )
     }
@@ -550,8 +643,13 @@ fun GlassButton(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     accentColor: Color,
+    isLargeScreen: Boolean,
     onClick: () -> Unit
 ) {
+    val hPadding = if (isLargeScreen) 32.dp else 24.dp
+    val vPadding = if (isLargeScreen) 16.dp else 12.dp
+    val iconSize = if (isLargeScreen) 28.dp else 22.dp
+
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
@@ -559,13 +657,13 @@ fun GlassButton(
             .background(GlassSurface)
             .border(1.dp, GlassBorder, RoundedCornerShape(16.dp))
             .clickable(onClick = onClick)
-            .padding(horizontal = 32.dp, vertical = 16.dp)
+            .padding(horizontal = hPadding, vertical = vPadding)
     ) {
         Icon(
             imageVector = icon,
             contentDescription = label,
             tint = accentColor,
-            modifier = Modifier.size(28.dp)
+            modifier = Modifier.size(iconSize)
         )
         Spacer(modifier = Modifier.height(4.dp))
         Text(

@@ -48,6 +48,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_API_BASE_URL = "api_base_url"
         private const val KEY_IS_DEVICE_REGISTERED = "is_device_registered"
         private const val KEY_DEVICE_ALIAS = "device_alias"
+        private const val KEY_VERCEL_API_KEY = "vercel_api_key"
     }
 
     private val masterKey: MasterKey by lazy {
@@ -70,6 +71,10 @@ class SecureStorage @Inject constructor(
     // ========================================================================
     // DEVICE CREDENTIALS
     // ========================================================================
+
+    var vercelApiKey: String?
+        get() = encryptedPrefs.getString(KEY_VERCEL_API_KEY, null)
+        set(value) = encryptedPrefs.edit().putString(KEY_VERCEL_API_KEY, value).apply()
 
     var deviceId: String?
         get() = encryptedPrefs.getString(KEY_DEVICE_ID, null)
