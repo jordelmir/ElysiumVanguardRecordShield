@@ -73,6 +73,9 @@ class RecordingService : Service() {
         private val _elapsedSeconds = MutableStateFlow(0L)
         val elapsedSeconds: StateFlow<Long> = _elapsedSeconds
 
+        // Static provider for Live Preview
+        var previewSurfaceProvider: Preview.SurfaceProvider? = null
+
         fun startVideoRecording(context: Context) {
             val intent = Intent(context, RecordingService::class.java).apply {
                 action = ACTION_START_VIDEO
@@ -108,6 +111,7 @@ class RecordingService : Service() {
     // Audio recording with MediaRecorder
     private var mediaRecorder: android.media.MediaRecorder? = null
     private var isAudioMode = false
+    private var videoCapture: VideoCapture<Recorder>? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -275,6 +279,9 @@ class RecordingService : Service() {
                 .setQualitySelector(QualitySelector.from(Quality.HD))
                 .setExecutor(Executors.newSingleThreadExecutor())
                 .build()
+            
+            val videoCaptureUseCase = VideoCapture.withOutput(recorder)
+            videoCapture = videoCaptureUseCase
             // Setup Preview if provider is available
             val preview = if (previewSurfaceProvider != null) {
                 Preview.Builder().build().also {
@@ -289,25 +296,25 @@ class RecordingService : Service() {
                         androidx.lifecycle.ProcessLifecycleOwner.get(),
                         CameraSelector.DEFAULT_BACK_CAMERA,
                         preview,
-                        videoCapture
+                        videoCaptureUseCase
                     )
                 } else {
                     cameraProvider.bindToLifecycle(
                         androidx.lifecycle.ProcessLifecycleOwner.get(),
                         CameraSelector.DEFAULT_BACK_CAMERA,
-                        videoCapture
+                        videoCaptureUseCase
                     )
                 }
 
                 val fileOutputOptions = FileOutputOptions.Builder(outputFile).build()
-                val recording = videoCapture.output
+                val recording = recorder
                     .prepareRecording(this@RecordingService, fileOutputOptions)
                     .apply {
                         if (ActivityCompat.checkSelfPermission(this@RecordingService, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                             withAudioEnabled()
                         }
                     }
-                    .start(ContextCompat.getMainExecutor(this@RecordingService)) { event ->
+                    .start(ContextCompat.getMainExecutor(this@RecordingService)) { event: VideoRecordEvent ->
                         if (event is VideoRecordEvent.Finalize) {
                             if (event.hasError()) {
                                 Log.e(TAG, "Video chunk error: ${event.error}")

@@ -8,7 +8,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -43,7 +43,7 @@ import java.io.File
  *   - Seamless playlist support for sequential chunk playback
  * ============================================================================
  */
-@OptIn(androidx.annotation.OptIn::class, androidx.media3.common.util.UnstableApi::class)
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
 fun PlayerScreen(
     recordingId: String,
@@ -145,7 +145,7 @@ fun PlayerTopBar(chunkCount: Int, onBackClick: () -> Unit) {
                 .border(1.dp, GlassBorder, RoundedCornerShape(12.dp))
         ) {
             Icon(
-                imageVector = Icons.Default.ArrowBack,
+                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                 contentDescription = "Back",
                 tint = TextPrimary
             )
