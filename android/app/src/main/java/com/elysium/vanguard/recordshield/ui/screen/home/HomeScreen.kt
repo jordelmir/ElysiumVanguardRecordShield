@@ -32,6 +32,12 @@ import com.elysium.vanguard.recordshield.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlin.math.sin
 import kotlin.random.Random
+import android.os.PowerManager
+import android.content.Context
+import android.content.Intent
+import android.provider.Settings
+import android.net.Uri
+import androidx.compose.foundation.BorderStroke
 
 /**
  * ============================================================================
@@ -52,6 +58,9 @@ fun HomeScreen(
     val context = LocalContext.current
     val isRecording by RecordingService.isRecording.collectAsState()
     val elapsedSeconds by RecordingService.elapsedSeconds.collectAsState()
+
+    val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+    val isIgnoringBatteryOptimizations = powerManager.isIgnoringBatteryOptimizations(context.packageName)
 
     Box(
         modifier = Modifier
@@ -74,6 +83,17 @@ fun HomeScreen(
             TopBar(onNavigateToGallery = onNavigateToGallery)
 
             Spacer(modifier = Modifier.weight(1f))
+
+            // Battery Optimization Warning Card
+            if (!isIgnoringBatteryOptimizations) {
+                BatteryOptimizationCard(onClick = {
+                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:${context.packageName}")
+                    }
+                    context.startActivity(intent)
+                })
+                Spacer(modifier = Modifier.height(16.dp))
+            }
 
             // Recording Timer (visible during recording)
             if (isRecording) {
@@ -505,3 +525,42 @@ fun Modifier.statusBarsPadding(): Modifier = this.then(
 fun Modifier.navigationBarsPadding(): Modifier = this.then(
     Modifier.windowInsetsPadding(WindowInsets.navigationBars)
 )
+
+// ============================================================================
+// BATTERY OPTIMIZATION CARD
+// ============================================================================
+@Composable
+fun BatteryOptimizationCard(onClick: () -> Unit) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(containerColor = RecordingRed.copy(alpha = 0.2f)),
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.dp, RecordingRed)
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Default.Warning,
+                contentDescription = "Warning",
+                tint = RecordingRed
+            )
+            Spacer(modifier = Modifier.width(16.dp))
+            Column {
+                Text(
+                    text = "BATTERY OPTIMIZATION ACTIVE",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = RecordingRed
+                )
+                Text(
+                    text = "Tap to disable. OS may kill recording.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary
+                )
+            }
+        }
+    }
+}

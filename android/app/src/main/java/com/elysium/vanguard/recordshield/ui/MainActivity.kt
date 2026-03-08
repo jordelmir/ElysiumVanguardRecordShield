@@ -25,6 +25,7 @@ import com.elysium.vanguard.recordshield.ui.screen.player.PlayerScreen
 import com.elysium.vanguard.recordshield.ui.theme.DeepBlack
 import com.elysium.vanguard.recordshield.ui.theme.RecordShieldTheme
 import dagger.hilt.android.AndroidEntryPoint
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 
 /**
  * ============================================================================
@@ -51,6 +52,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         requestRequiredPermissions()

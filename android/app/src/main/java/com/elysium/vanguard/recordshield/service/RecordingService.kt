@@ -56,9 +56,10 @@ class RecordingService : Service() {
 
     companion object {
         private const val TAG = "RecordingService"
-        const val ACTION_START_VIDEO = "ACTION_START_VIDEO"
-        const val ACTION_START_AUDIO = "ACTION_START_AUDIO"
-        const val ACTION_STOP = "ACTION_STOP"
+        const val ACTION_START_VIDEO = "com.elysium.vanguard.recordshield.ACTION_START_VIDEO"
+        const val ACTION_START_AUDIO = "com.elysium.vanguard.recordshield.ACTION_START_AUDIO"
+        const val ACTION_STOP = "com.elysium.vanguard.recordshield.ACTION_STOP"
+        const val ACTION_TOGGLE = "com.elysium.vanguard.recordshield.ACTION_TOGGLE"
         const val NOTIFICATION_ID = 1001
         const val CHUNK_DURATION_MS = 10_000L // 10 seconds per chunk
 
@@ -115,6 +116,13 @@ class RecordingService : Service() {
             ACTION_START_VIDEO -> startRecording(RecordingType.VIDEO)
             ACTION_START_AUDIO -> startRecording(RecordingType.AUDIO)
             ACTION_STOP -> stopRecordingInternal()
+            ACTION_TOGGLE -> {
+                if (_isRecording.value) {
+                    stopRecordingInternal()
+                } else {
+                    startRecording(RecordingType.VIDEO)
+                }
+            }
         }
         // Why STICKY: If Android kills the service, it restarts it automatically.
         // This is the last-resort anti-sabotage mechanism.
