@@ -1,0 +1,335 @@
+package com.elysium.vanguard.recordshield.ui.screen.gallery
+
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.elysium.vanguard.recordshield.domain.model.Recording
+import com.elysium.vanguard.recordshield.domain.model.RecordingStatus
+import com.elysium.vanguard.recordshield.domain.model.RecordingType
+import com.elysium.vanguard.recordshield.ui.theme.*
+import java.text.SimpleDateFormat
+import java.util.*
+
+/**
+ * ============================================================================
+ * GalleryScreen — Evidence Vault Browser
+ * ============================================================================
+ *
+ * Design: Dark gallery with glassmorphism recording cards. Each card shows:
+ *   - Recording type icon (video/audio) with neon glow
+ *   - Duration and chunk count
+ *   - Upload status indicator
+ *   - Timestamp
+ *
+ * Access: Protected by PIN gate (PinScreen shown before this screen)
+ * ============================================================================
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun GalleryScreen(
+    recordings: List<Recording>,
+    onRecordingClick: (Recording) -> Unit,
+    onBackClick: () -> Unit,
+    onDeleteRecording: (Recording) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(DeepBlack)
+            .statusBarsPadding()
+            .navigationBarsPadding()
+    ) {
+        // Top Bar
+        GalleryTopBar(
+            recordingCount = recordings.size,
+            onBackClick = onBackClick
+        )
+
+        if (recordings.isEmpty()) {
+            EmptyGalleryState()
+        } else {
+            LazyColumn(
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(
+                    items = recordings,
+                    key = { it.id }
+                ) { recording ->
+                    RecordingCard(
+                        recording = recording,
+                        onClick = { onRecordingClick(recording) },
+                        onDelete = { onDeleteRecording(recording) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun GalleryTopBar(recordingCount: Int, onBackClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        IconButton(
+            onClick = onBackClick,
+            modifier = Modifier
+                .clip(RoundedCornerShape(12.dp))
+                .background(GlassSurface)
+                .border(1.dp, GlassBorder, RoundedCornerShape(12.dp))
+        ) {
+            Icon(
+                imageVector = Icons.Default.ArrowBack,
+                contentDescription = "Back",
+                tint = TextPrimary
+            )
+        }
+
+        Spacer(modifier = Modifier.width(16.dp))
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "EVIDENCE VAULT",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = TextPrimary,
+                letterSpacing = 2.sp
+            )
+            Text(
+                text = "$recordingCount recording${if (recordingCount != 1) "s" else ""} secured",
+                style = MaterialTheme.typography.labelSmall,
+                color = MatrixGreen,
+                letterSpacing = 1.sp
+            )
+        }
+    }
+}
+
+@Composable
+fun RecordingCard(
+    recording: Recording,
+    onClick: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val isVideo = recording.type == RecordingType.VIDEO
+    val accentColor = if (isVideo) ElectricBlue else DeepPurple
+    val typeIcon = if (isVideo) Icons.Default.Videocam else Icons.Default.Mic
+
+    val statusColor = when (recording.status) {
+        RecordingStatus.COMPLETED -> SuccessGreen
+        RecordingStatus.RECORDING -> RecordingRed
+        RecordingStatus.INTERRUPTED -> WarningAmber
+        RecordingStatus.UPLOADING -> ElectricBlue
+    }
+
+    val dateFormat = remember { SimpleDateFormat("MMM dd, yyyy • HH:mm", Locale.getDefault()) }
+    val duration = recording.endedAt?.let {
+        val totalSec = (it - recording.startedAt) / 1000
+        val min = totalSec / 60
+        val sec = totalSec % 60
+        "${min}m ${sec}s"
+    } ?: "Recording..."
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(
+                Brush.horizontalGradient(
+                    colors = listOf(
+                        CardSurface,
+                        CardSurface.copy(alpha = 0.8f)
+                    )
+                )
+            )
+            .border(1.dp, SubtleBorder, RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick)
+            .padding(16.dp)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Type icon with glow
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(52.dp)
+                    .drawBehind {
+                        drawCircle(
+                            color = accentColor.copy(alpha = 0.15f),
+                            radius = size.minDimension / 2 + 8f
+                        )
+                    }
+                    .clip(CircleShape)
+                    .background(accentColor.copy(alpha = 0.1f))
+                    .border(1.dp, accentColor.copy(alpha = 0.3f), CircleShape)
+            ) {
+                Icon(
+                    imageVector = typeIcon,
+                    contentDescription = null,
+                    tint = accentColor,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.width(16.dp))
+
+            // Info
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = if (isVideo) "Video Recording" else "Audio Recording",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = TextPrimary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    // Status dot
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(statusColor)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Text(
+                    text = dateFormat.format(Date(recording.startedAt)),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TextTertiary
+                )
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                // Stats row
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    StatChip(
+                        icon = Icons.Default.Timer,
+                        text = duration,
+                        color = TextSecondary
+                    )
+                    StatChip(
+                        icon = Icons.Default.Layers,
+                        text = "${recording.totalChunks} chunks",
+                        color = TextSecondary
+                    )
+                    StatChip(
+                        icon = Icons.Default.Storage,
+                        text = formatBytes(recording.totalSizeBytes),
+                        color = TextSecondary
+                    )
+                }
+            }
+
+            // Delete button
+            IconButton(onClick = onDelete) {
+                Icon(
+                    imageVector = Icons.Default.DeleteOutline,
+                    contentDescription = "Delete",
+                    tint = TextTertiary
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun StatChip(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    text: String,
+    color: androidx.compose.ui.graphics.Color
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = color,
+            modifier = Modifier.size(14.dp)
+        )
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            color = color
+        )
+    }
+}
+
+@Composable
+fun EmptyGalleryState() {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(
+                imageVector = Icons.Default.Shield,
+                contentDescription = null,
+                tint = TextTertiary,
+                modifier = Modifier.size(64.dp)
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = "NO RECORDINGS YET",
+                style = MaterialTheme.typography.titleMedium,
+                color = TextTertiary,
+                letterSpacing = 2.sp
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "Start recording to secure evidence",
+                style = MaterialTheme.typography.bodyMedium,
+                color = TextTertiary
+            )
+        }
+    }
+}
+
+// Helper
+private fun formatBytes(bytes: Long): String {
+    return when {
+        bytes < 1024 -> "${bytes}B"
+        bytes < 1024 * 1024 -> "${bytes / 1024}KB"
+        bytes < 1024 * 1024 * 1024 -> String.format("%.1fMB", bytes / (1024.0 * 1024.0))
+        else -> String.format("%.1fGB", bytes / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
+// Window insets extensions
+@Composable
+fun Modifier.statusBarsPadding(): Modifier = this.then(
+    Modifier.windowInsetsPadding(WindowInsets.statusBars)
+)
+
+@Composable
+fun Modifier.navigationBarsPadding(): Modifier = this.then(
+    Modifier.windowInsetsPadding(WindowInsets.navigationBars)
+)

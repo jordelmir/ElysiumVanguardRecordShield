@@ -1,0 +1,32 @@
+# Elysium Vanguard Record Shield - Ignore Rules
+
+# Environment files with secrets
+.env
+.env.local
+.env.production
+.env*.local
+
+# Node
+node_modules/
+dist/
+.vercel/
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+*.iml
+.idea/
+.vscode/

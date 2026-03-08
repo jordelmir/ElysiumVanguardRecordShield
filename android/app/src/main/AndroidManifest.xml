@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ============================================================================
+  ELYSIUM VANGUARD RECORD SHIELD — Android Manifest
+  ============================================================================
+  
+  SECURITY PHILOSOPHY:
+  This manifest follows the Principle of Least Privilege. We request ONLY
+  the permissions strictly necessary for the app's functionality:
+  
+  ✅ CAMERA           — Video recording
+  ✅ RECORD_AUDIO     — Audio capture  
+  ✅ FOREGROUND_SERVICE — Keep recording alive when screen is off
+  ✅ WAKE_LOCK        — Prevent CPU sleep during active recording
+  ✅ INTERNET         — Upload chunks to Vercel
+  ✅ POST_NOTIFICATIONS — Foreground service notification (Android 13+)
+  
+  ❌ READ_EXTERNAL_STORAGE  — NOT requested. All files stored in app sandbox.
+  ❌ WRITE_EXTERNAL_STORAGE — NOT requested. Evidence is invisible to galleries.
+  ❌ ACCESS_FINE_LOCATION    — NOT requested unless user explicitly opts in.
+  ============================================================================
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- ================================================================== -->
+    <!-- PERMISSIONS                                                         -->
+    <!-- ================================================================== -->
+
+    <!-- Camera: Required for video evidence capture via CameraX -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- Audio: Required for audio evidence capture and video+audio recording -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- Foreground Service: Keeps recording alive when screen is locked/off.
+         Why: Android kills background services after ~1 minute. A foreground
+         service with a persistent notification ensures recording continues
+         indefinitely. This is the ONLY reliable way to maintain recording
+         during screen-off scenarios. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+
+    <!-- Wake Lock: Prevents CPU from sleeping during recording.
+         Why: Even with a foreground service, the CPU can enter deep sleep
+         states that interrupt MediaRecorder/CameraX. A partial wake lock
+         (CPU only, screen can be off) ensures continuous capture. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Internet: Required to upload evidence chunks to Vercel -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Notifications: Required on Android 13+ for foreground service notification -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Receive Boot: Restart upload workers after device reboot -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- ================================================================== -->
+    <!-- HARDWARE FEATURES                                                   -->
+    <!-- ================================================================== -->
+
+    <!-- Camera is required but not strictly necessary (app works audio-only) -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="true" />
+
+    <!-- ================================================================== -->
+    <!-- APPLICATION                                                         -->
+    <!-- ================================================================== -->
+    <application android:name=".RecordShieldApplication" android:allowBackup="false" android:dataExtractionRules="@xml/data_extraction_rules" android:fullBackupContent="false" android:icon="@mipmap/ic_launcher" android:label="@string/app_name" android:roundIcon="@mipmap/ic_launcher_round" android:supportsRtl="true" android:theme="@style/Theme.RecordShield" android:networkSecurityConfig="@xml/network_security_config" tools:targetApi="35">
+
+        <!-- Main Activity: Single-activity architecture with Compose Navigation -->
+        <activity android:name=".ui.MainActivity" android:exported="true" android:windowSoftInputMode="adjustResize" android:screenOrientation="portrait" android:launchMode="singleTask" android:taskAffinity="">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Recording Foreground Service
+             Why type="camera|microphone": Android 14+ requires declaring the
+             exact foreground service type. This enables the service to access
+             camera and microphone while in the foreground. -->
+        <service android:name=".service.RecordingService" android:foregroundServiceType="camera|microphone" android:exported="false" />
+
+        <!-- Upload Worker: Handles chunk uploads with WorkManager -->
+        <provider android:name="androidx.startup.InitializationProvider" android:authorities="${applicationId}.androidx-startup" android:exported="false" tools:node="merge">
+            <meta-data android:name="androidx.work.WorkManagerInitializer" android:value="androidx.startup" tools:node="remove" />
+        </provider>
+
+        <!-- Boot Receiver: Restart pending uploads after reboot -->
+        <receiver android:name=".receiver.BootReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+    </application>
+
+</manifest>

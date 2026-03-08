@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Network Security Config — Elysium Vanguard Record Shield
+  
+  Why: Enforces HTTPS-only connections in production. The debug-overrides
+  section allows cleartext for local development (Vercel dev server).
+-->
+<network-security-config>
+    <!-- Production: HTTPS only -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <!-- Debug only: Allow cleartext for local development -->
+    <debug-overrides>
+        <trust-anchors>
+            <certificates src="user" />
+        </trust-anchors>
+    </debug-overrides>
+
+    <!-- Pin Supabase and Vercel domains -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">rohninosfwpmjmcklhbh.supabase.co</domain>
+        <domain includeSubdomains="true">vercel.app</domain>
+    </domain-config>
+</network-security-config>
