@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -43,7 +44,7 @@ import java.io.File
  *   - Seamless playlist support for sequential chunk playback
  * ============================================================================
  */
-@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+@OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
 fun PlayerScreen(
     recordingId: String,
