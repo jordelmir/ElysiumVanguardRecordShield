@@ -1,62 +1,33 @@
-package com.elysium.vanguard.recordshield.ui.screen.pin
+package com.elysium.vanguard.recordshield.ui.screen.setup
 
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Backspace
-import androidx.compose.material.icons.filled.Fingerprint
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.elysium.vanguard.recordshield.ui.theme.*
 import com.elysium.vanguard.recordshield.ui.component.PinDot
 import com.elysium.vanguard.recordshield.ui.component.PinKeypad
+import com.elysium.vanguard.recordshield.ui.theme.*
 
-
-/**
- * ============================================================================
- * PinScreen — Captive Lock Screen
- * ============================================================================
- *
- * Design: Full-screen PIN gate with glassmorphism keypad. This screen is
- * displayed:
- *   1. When accessing the gallery (privacy protection)
- *   2. During recording as a captive lock (anti-sabotage)
- *   3. On app launch when PIN is configured
- *
- * Anti-Sabotage: When isLockMode = true, the back button and gestures
- * are intercepted, making it impossible to dismiss this screen without
- * entering the correct PIN or stopping the recording from the
- * notification (which itself could be hidden on some OEMs).
- * ============================================================================
- */
 @Composable
-fun PinScreen(
-    title: String = "ENTER PIN",
-    subtitle: String = "Access restricted",
-    isLockMode: Boolean = false, // true = captive during recording
-    onPinVerified: () -> Unit,
-    onVerifyPin: (String) -> Boolean
+fun SetupScreen(
+    onPinSet: (String) -> Unit
 ) {
-    var enteredPin by remember { mutableStateOf("") }
+    var step by remember { mutableStateOf(SetupStep.ENTER_PIN) }
+    var firstPin by remember { mutableStateOf("") }
+    var secondPin by remember { mutableStateOf("") }
     var isError by remember { mutableStateOf(false) }
     var errorShake by remember { mutableStateOf(false) }
     val maxPinLength = 6
 
-    // Shake animation on wrong PIN
     val shakeOffset by animateFloatAsState(
         targetValue = if (errorShake) 20f else 0f,
         animationSpec = spring(
@@ -77,7 +48,7 @@ fun PinScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier.padding(32.dp)
         ) {
-            // Shield icon with glow
+            // Setup icon with glow
             Box(
                 modifier = Modifier
                     .size(80.dp)
@@ -90,7 +61,7 @@ fun PinScreen(
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    imageVector = Icons.Default.Fingerprint,
+                    imageVector = Icons.Default.Security,
                     contentDescription = null,
                     tint = MatrixGreen,
                     modifier = Modifier.size(48.dp)
@@ -99,16 +70,24 @@ fun PinScreen(
 
             Spacer(modifier = Modifier.height(32.dp))
 
-            // Title
             Text(
-                text = title,
+                text = "INITIAL SETUP",
+                style = MaterialTheme.typography.labelLarge,
+                color = MatrixGreen,
+                letterSpacing = 4.sp
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = if (step == SetupStep.ENTER_PIN) "SET MASTER PIN" else "CONFIRM MASTER PIN",
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
                 color = TextPrimary,
-                letterSpacing = 3.sp
+                letterSpacing = 2.sp
             )
             Text(
-                text = subtitle,
+                text = "This PIN secures your evidence.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = TextTertiary,
                 letterSpacing = 1.sp
@@ -117,13 +96,14 @@ fun PinScreen(
             Spacer(modifier = Modifier.height(40.dp))
 
             // PIN Dots
+            val currentPin = if (step == SetupStep.ENTER_PIN) firstPin else secondPin
             Row(
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                 modifier = Modifier.offset(x = shakeOffset.dp)
             ) {
                 repeat(maxPinLength) { index ->
                     PinDot(
-                        isFilled = index < enteredPin.length,
+                        isFilled = index < currentPin.length,
                         isError = isError
                     )
                 }
@@ -134,34 +114,48 @@ fun PinScreen(
             // Keypad
             PinKeypad(
                 onDigit = { digit ->
-                    if (enteredPin.length < maxPinLength) {
-                        enteredPin += digit
-                        isError = false
-
-                        // Auto-verify when PIN is complete
-                        if (enteredPin.length == maxPinLength) {
-                            if (onVerifyPin(enteredPin)) {
-                                onPinVerified()
-                            } else {
-                                isError = true
-                                errorShake = true
-                                enteredPin = ""
+                    if (step == SetupStep.ENTER_PIN) {
+                        if (firstPin.length < maxPinLength) {
+                            firstPin += digit
+                            if (firstPin.length == maxPinLength) {
+                                step = SetupStep.CONFIRM_PIN
+                            }
+                        }
+                    } else {
+                        if (secondPin.length < maxPinLength) {
+                            secondPin += digit
+                            isError = false
+                            if (secondPin.length == maxPinLength) {
+                                if (secondPin == firstPin) {
+                                    onPinSet(secondPin)
+                                } else {
+                                    isError = true
+                                    errorShake = true
+                                    secondPin = ""
+                                }
                             }
                         }
                     }
                 },
                 onBackspace = {
-                    if (enteredPin.isNotEmpty()) {
-                        enteredPin = enteredPin.dropLast(1)
-                        isError = false
+                    if (step == SetupStep.ENTER_PIN) {
+                        if (firstPin.isNotEmpty()) firstPin = firstPin.dropLast(1)
+                    } else {
+                        if (secondPin.isNotEmpty()) secondPin = secondPin.dropLast(1)
+                        else {
+                            // Go back to first step if backspacing on empty second PIN
+                            step = SetupStep.ENTER_PIN
+                            firstPin = firstPin.dropLast(1)
+                        }
                     }
+                    isError = false
                 }
             )
 
             if (isError) {
                 Spacer(modifier = Modifier.height(16.dp))
                 Text(
-                    text = "INCORRECT PIN",
+                    text = "PINS DO NOT MATCH",
                     style = MaterialTheme.typography.labelSmall,
                     color = RecordingRed,
                     letterSpacing = 2.sp
@@ -171,5 +165,7 @@ fun PinScreen(
     }
 }
 
-// Removed local PinDot, PinKeypad, and KeypadButton in favor of shared components
-
+enum class SetupStep {
+    ENTER_PIN,
+    CONFIRM_PIN
+}

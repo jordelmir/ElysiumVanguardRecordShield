@@ -1,16 +1,17 @@
 package com.elysium.vanguard.recordshield.service
 
 import android.app.*
-import android.content.Context
-import android.content.Intent
-import android.os.IBinder
-import android.os.PowerManager
+import android.content.*
+import android.os.*
 import android.util.Log
-import androidx.camera.core.CameraSelector
+import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.*
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.core.app.ActivityCompat
+import android.Manifest
+import android.content.pm.PackageManager
 import com.elysium.vanguard.recordshield.R
 import com.elysium.vanguard.recordshield.RecordShieldApplication
 import com.elysium.vanguard.recordshield.domain.model.*
@@ -18,8 +19,7 @@ import com.elysium.vanguard.recordshield.domain.repository.ChunkRepository
 import com.elysium.vanguard.recordshield.domain.repository.RecordingRepository
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.*
 import java.io.File
 import java.io.FileInputStream
 import java.security.MessageDigest
@@ -275,20 +275,38 @@ class RecordingService : Service() {
                 .setQualitySelector(QualitySelector.from(Quality.HD))
                 .setExecutor(Executors.newSingleThreadExecutor())
                 .build()
-            val videoCapture = VideoCapture.withOutput(recorder)
+            // Setup Preview if provider is available
+            val preview = if (previewSurfaceProvider != null) {
+                Preview.Builder().build().also {
+                    it.setSurfaceProvider(previewSurfaceProvider)
+                }
+            } else null
 
             try {
                 cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(
-                    androidx.lifecycle.ProcessLifecycleOwner.get(),
-                    CameraSelector.DEFAULT_BACK_CAMERA,
-                    videoCapture
-                )
+                if (preview != null) {
+                    cameraProvider.bindToLifecycle(
+                        androidx.lifecycle.ProcessLifecycleOwner.get(),
+                        CameraSelector.DEFAULT_BACK_CAMERA,
+                        preview,
+                        videoCapture
+                    )
+                } else {
+                    cameraProvider.bindToLifecycle(
+                        androidx.lifecycle.ProcessLifecycleOwner.get(),
+                        CameraSelector.DEFAULT_BACK_CAMERA,
+                        videoCapture
+                    )
+                }
 
                 val fileOutputOptions = FileOutputOptions.Builder(outputFile).build()
                 val recording = videoCapture.output
                     .prepareRecording(this@RecordingService, fileOutputOptions)
-                    .withAudioEnabled()
+                    .apply {
+                        if (ActivityCompat.checkSelfPermission(this@RecordingService, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                            withAudioEnabled()
+                        }
+                    }
                     .start(ContextCompat.getMainExecutor(this@RecordingService)) { event ->
                         if (event is VideoRecordEvent.Finalize) {
                             if (event.hasError()) {
@@ -305,6 +323,7 @@ class RecordingService : Service() {
             } finally {
                 cameraProvider.unbindAll()
             }
+
         }
     }
 

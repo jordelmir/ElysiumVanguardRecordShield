@@ -27,6 +27,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.widget.Toast
+import androidx.camera.view.PreviewView
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.ui.viewinterop.AndroidView
 import com.elysium.vanguard.recordshield.service.RecordingService
 import com.elysium.vanguard.recordshield.ui.theme.*
 import kotlinx.coroutines.delay
@@ -38,6 +44,8 @@ import android.content.Intent
 import android.provider.Settings
 import android.net.Uri
 import androidx.compose.foundation.BorderStroke
+import androidx.activity.compose.BackHandler
+import androidx.hilt.navigation.compose.hiltViewModel
 
 /**
  * ============================================================================
@@ -61,6 +69,12 @@ fun HomeScreen(
 
     val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
     val isIgnoringBatteryOptimizations = powerManager.isIgnoringBatteryOptimizations(context.packageName)
+
+    // Strict OS-level back button interception
+    BackHandler(enabled = isRecording) {
+        // Prevent backing out of the app when actively recording for evidence integrity
+        Toast.makeText(context, "Cannot exit while recording evidence.", Toast.LENGTH_SHORT).show()
+    }
 
     Box(
         modifier = Modifier
@@ -123,24 +137,128 @@ fun HomeScreen(
                 }
             )
 
-            Spacer(modifier = Modifier.height(24.dp))
-
-            // Mode Selector (Video / Audio)
             if (!isRecording) {
+                Spacer(modifier = Modifier.height(24.dp))
                 ModeSelector(
-                    onVideoSelected = {
-                        RecordingService.startVideoRecording(context)
-                    },
-                    onAudioSelected = {
-                        RecordingService.startAudioRecording(context)
-                    }
+                    onVideoSelected = { RecordingService.startVideoRecording(context) },
+                    onAudioSelected = { RecordingService.startAudioRecording(context) }
                 )
             }
 
-            Spacer(modifier = Modifier.weight(1f))
+            Spacer(modifier = Modifier.height(32.dp))
 
-            // Bottom Status Card
-            StatusCard(isRecording = isRecording)
+            // LIVE EVIDENCE PREVIEW (Responsive)
+            LivePreview(isRecording = isRecording)
+
+            Spacer(modifier = Modifier.height(32.dp))
+
+            // Responsive Status Grid
+            val statusItems = remember {
+                listOf(
+                    StatusItem("ENCRYPTION", "AES-256", Icons.Default.Shield, MatrixGreen),
+                    StatusItem("LOCATION", "PROTECTED", Icons.Default.GpsFixed, MatrixGreen),
+                    StatusItem("STORAGE", "ENCRYPTED", Icons.Default.Folder, MatrixGreen),
+                    StatusItem("SIGNAL", "SECURE", Icons.Default.Wifi, MatrixGreen)
+                )
+            }
+
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(minSize = 150.dp),
+                contentPadding = PaddingValues(horizontal = 24.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 240.dp)
+            ) {
+                items(statusItems) { item ->
+                    StatusCardUi(item)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+    }
+}
+
+@Composable
+fun LivePreview(isRecording: Boolean) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth(0.9f)
+            .aspectRatio(16/9f)
+            .clip(RoundedCornerShape(12.dp))
+            .background(GlassSurface)
+            .border(1.dp, if (isRecording) RecordingRed.copy(alpha = 0.5f) else MatrixGreen.copy(alpha = 0.2f), RoundedCornerShape(12.dp)),
+        contentAlignment = Alignment.Center
+    ) {
+        if (isRecording) {
+            AndroidView(
+                factory = { context ->
+                    PreviewView(context).apply {
+                        this.scaleType = PreviewView.ScaleType.FILL_CENTER
+                        RecordingService.previewSurfaceProvider = this.surfaceProvider
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+            
+            // Overlay
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(8.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(RecordingRed.copy(alpha = 0.8f))
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(Color.White))
+                    Text("LIVE", color = Color.White, fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        } else {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(
+                    imageVector = Icons.Default.CameraAlt,
+                    contentDescription = null,
+                    tint = MatrixGreen.copy(alpha = 0.2f),
+                    modifier = Modifier.size(32.dp)
+                )
+                Text(
+                    "PREVIEW STANDBY",
+                    color = MatrixGreen.copy(alpha = 0.3f),
+                    fontSize = 10.sp,
+                    letterSpacing = 1.sp
+                )
+            }
+        }
+    }
+}
+
+data class StatusItem(
+    val label: String,
+    val value: String,
+    val icon: androidx.compose.ui.graphics.vector.ImageVector,
+    val color: Color
+)
+
+@Composable
+fun StatusCardUi(item: StatusItem) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(GlassSurface)
+            .border(0.5.dp, GlassBorder, RoundedCornerShape(8.dp))
+            .padding(10.dp)
+    ) {
+        Column {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Icon(item.icon, null, tint = item.color, modifier = Modifier.size(14.dp))
+                Text(item.label, color = item.color, fontSize = 9.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(item.value, color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Light)
         }
     }
 }
@@ -514,17 +632,6 @@ fun StatusItem(label: String, value: String, color: Color) {
         )
     }
 }
-
-// Helper extension for WindowInsetsPadding
-@Composable
-fun Modifier.statusBarsPadding(): Modifier = this.then(
-    Modifier.windowInsetsPadding(WindowInsets.statusBars)
-)
-
-@Composable
-fun Modifier.navigationBarsPadding(): Modifier = this.then(
-    Modifier.windowInsetsPadding(WindowInsets.navigationBars)
-)
 
 // ============================================================================
 // BATTERY OPTIMIZATION CARD

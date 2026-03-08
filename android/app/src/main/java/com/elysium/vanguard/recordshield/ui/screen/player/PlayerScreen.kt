@@ -3,6 +3,7 @@ package com.elysium.vanguard.recordshield.ui.screen.player
 import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -274,10 +275,3 @@ fun InfoItem(label: String, value: String) {
         )
     }
 }
-
-// Extension helpers
-@Composable
-private fun Modifier.clickable(onClick: () -> Unit): Modifier =
-    this.then(
-        Modifier.clickable(onClick = onClick)
-    )

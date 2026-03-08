@@ -5,10 +5,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -30,16 +29,7 @@ import java.util.*
 
 /**
  * ============================================================================
- * GalleryScreen — Evidence Vault Browser
- * ============================================================================
- *
- * Design: Dark gallery with glassmorphism recording cards. Each card shows:
- *   - Recording type icon (video/audio) with neon glow
- *   - Duration and chunk count
- *   - Upload status indicator
- *   - Timestamp
- *
- * Access: Protected by PIN gate (PinScreen shown before this screen)
+ * GalleryScreen — Evidence Vault Browser (Responsive Grid)
  * ============================================================================
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -66,9 +56,13 @@ fun GalleryScreen(
         if (recordings.isEmpty()) {
             EmptyGalleryState()
         } else {
-            LazyColumn(
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+            // Responsive Grid: 1 column on phone, 2 on tablet/landscape
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(minSize = 340.dp),
+                contentPadding = PaddingValues(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                modifier = Modifier.fillMaxSize()
             ) {
                 items(
                     items = recordings,
@@ -322,14 +316,3 @@ private fun formatBytes(bytes: Long): String {
         else -> String.format("%.1fGB", bytes / (1024.0 * 1024.0 * 1024.0))
     }
 }
-
-// Window insets extensions
-@Composable
-fun Modifier.statusBarsPadding(): Modifier = this.then(
-    Modifier.windowInsetsPadding(WindowInsets.statusBars)
-)
-
-@Composable
-fun Modifier.navigationBarsPadding(): Modifier = this.then(
-    Modifier.windowInsetsPadding(WindowInsets.navigationBars)
-)

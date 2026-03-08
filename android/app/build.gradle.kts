@@ -76,6 +76,18 @@ android {
     }
 }
 
+// Forward tmpdir to KSP workers (Room SQLite verifier needs writable temp)
+val projectTmpDir = "${project.projectDir}/.tmp"
+tasks.configureEach {
+    if (this is JavaForkOptions) {
+        jvmArgs("-Djava.io.tmpdir=$projectTmpDir", "-Dorg.sqlite.tmpdir=$projectTmpDir")
+    }
+}
+
+ksp {
+    arg("room.schemaLocation", "${projectDir}/schemas")
+}
+
 dependencies {
     // ========================================================================
     // JETPACK COMPOSE — UI Framework

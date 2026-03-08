@@ -58,10 +58,6 @@ class MainViewModel @Inject constructor(
 
     init {
         _isDeviceRegistered.value = secureStorage.isDeviceRegistered
-        // If no PIN is set, auto-verify (first-time user)
-        if (!secureStorage.isPinSet()) {
-            _isPinVerified.value = true
-        }
     }
 
     // ========================================================================
@@ -80,6 +76,7 @@ class MainViewModel @Inject constructor(
 
     fun setPin(pin: String) {
         secureStorage.setPin(pin)
+        _isPinVerified.value = true
     }
 
     fun resetPinVerification() {

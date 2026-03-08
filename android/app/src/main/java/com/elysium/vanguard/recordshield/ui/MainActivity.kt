@@ -12,16 +12,28 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.background
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.elysium.vanguard.recordshield.R
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
+import kotlinx.coroutines.delay
+import androidx.compose.animation.core.*
+import androidx.compose.ui.draw.scale
 import com.elysium.vanguard.recordshield.service.UploadWorker
 import com.elysium.vanguard.recordshield.ui.screen.gallery.GalleryScreen
 import com.elysium.vanguard.recordshield.ui.screen.home.HomeScreen
 import com.elysium.vanguard.recordshield.ui.screen.pin.PinScreen
 import com.elysium.vanguard.recordshield.ui.screen.player.PlayerScreen
+import com.elysium.vanguard.recordshield.ui.screen.setup.SetupScreen
 import com.elysium.vanguard.recordshield.ui.theme.DeepBlack
 import com.elysium.vanguard.recordshield.ui.theme.RecordShieldTheme
 import dagger.hilt.android.AndroidEntryPoint
@@ -101,8 +113,28 @@ fun RecordShieldApp() {
 
     NavHost(
         navController = navController,
-        startDestination = "home"
+        startDestination = "splash"
     ) {
+        composable("splash") {
+            SplashScreen {
+                val destination = if (viewModel.isPinSet()) "home" else "setup"
+                navController.navigate(destination) {
+                    popUpTo("splash") { inclusive = true }
+                }
+            }
+        }
+
+        composable("setup") {
+            SetupScreen(
+                onPinSet = { pin ->
+                    viewModel.setPin(pin)
+                    navController.navigate("home") {
+                        popUpTo("setup") { inclusive = true }
+                    }
+                }
+            )
+        }
+
         composable("home") {
             HomeScreen(
                 onNavigateToGallery = {
@@ -156,5 +188,42 @@ fun RecordShieldApp() {
                 }
             )
         }
+    }
+}
+
+// ============================================================================
+// ANIMATED SPLASH SCREEN ("Breathing" Effect)
+// ============================================================================
+@Composable
+fun SplashScreen(onAnimationFinish: () -> Unit) {
+    val infiniteTransition = rememberInfiniteTransition(label = "breathing")
+    val scale by infiniteTransition.animateFloat(
+        initialValue = 0.90f,
+        targetValue = 1.15f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1500, easing = EaseInOutSine),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "logoScale"
+    )
+
+    LaunchedEffect(Unit) {
+        delay(2500L) // Show splash for 2.5 seconds
+        onAnimationFinish()
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(DeepBlack),
+        contentAlignment = Alignment.Center
+    ) {
+        Image(
+            painter = painterResource(id = R.mipmap.ic_launcher),
+            contentDescription = "App Logo",
+            modifier = Modifier
+                .size(240.dp)
+                .scale(scale)
+        )
     }
 }
