@@ -685,6 +685,13 @@ fun MatrixRainBackground() {
 
 @Composable
 fun TopBar(onNavigateToGallery: () -> Unit, onNavigateToCloudSettings: () -> Unit = {}) {
+    val context = LocalContext.current
+    var showQualityMenu by remember { mutableStateOf(false) }
+    val secureStorage = remember {
+        com.elysium.vanguard.recordshield.data.local.SecureStorage(context)
+    }
+    var currentQuality by remember { mutableStateOf(secureStorage.selectedVideoQuality) }
+
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -722,6 +729,54 @@ fun TopBar(onNavigateToGallery: () -> Unit, onNavigateToCloudSettings: () -> Uni
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Video quality selector
+            Box {
+                IconButton(
+                    onClick = { showQualityMenu = true },
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(GlassSurface)
+                        .border(1.dp, GlassBorder, RoundedCornerShape(12.dp))
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.HighQuality,
+                        contentDescription = "Video Quality",
+                        tint = ElectricBlue
+                    )
+                }
+                DropdownMenu(
+                    expanded = showQualityMenu,
+                    onDismissRequest = { showQualityMenu = false }
+                ) {
+                    com.elysium.vanguard.recordshield.data.cloud.VideoQualityPreset.entries.forEach { preset ->
+                        DropdownMenuItem(
+                            text = {
+                                Column {
+                                    Text(
+                                        text = preset.label,
+                                        fontWeight = if (currentQuality == preset.name) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (currentQuality == preset.name) MatrixGreen else TextPrimary
+                                    )
+                                    Text(
+                                        text = preset.description,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = TextSecondary
+                                    )
+                                }
+                            },
+                            onClick = {
+                                secureStorage.selectedVideoQuality = preset.name
+                                currentQuality = preset.name
+                                showQualityMenu = false
+                            },
+                            leadingIcon = if (currentQuality == preset.name) {
+                                { Icon(Icons.Default.Check, contentDescription = null, tint = MatrixGreen) }
+                            } else null
+                        )
+                    }
+                }
+            }
+
             // Cloud settings button
             IconButton(
                 onClick = onNavigateToCloudSettings,

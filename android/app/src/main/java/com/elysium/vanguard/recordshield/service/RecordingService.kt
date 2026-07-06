@@ -15,11 +15,18 @@ import androidx.core.content.ContextCompat
 import androidx.core.app.ActivityCompat
 import android.Manifest
 import android.content.pm.PackageManager
+import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CameraDevice
+import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.CameraMetadata
 import com.elysium.vanguard.recordshield.R
 import com.elysium.vanguard.recordshield.RecordShieldApplication
 import com.elysium.vanguard.recordshield.domain.model.*
 import com.elysium.vanguard.recordshield.domain.repository.ChunkRepository
 import com.elysium.vanguard.recordshield.domain.repository.RecordingRepository
+import com.elysium.vanguard.recordshield.data.cloud.VideoQualityPreset
+import com.elysium.vanguard.recordshield.data.local.SecureStorage
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
 import kotlinx.coroutines.isActive
@@ -65,6 +72,7 @@ class RecordingService : LifecycleService() {
     @Inject lateinit var recordingRepository: RecordingRepository
     @Inject lateinit var chunkRepository: ChunkRepository
     @Inject lateinit var cloudStorageManager: com.elysium.vanguard.recordshield.data.cloud.CloudStorageManager
+    @Inject lateinit var secureStorage: SecureStorage
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     // Dedicated scope for uploads — survives serviceScope.cancel() so uploads complete
@@ -291,18 +299,39 @@ class RecordingService : LifecycleService() {
     private fun setupCamera() {
         if (cameraProvider != null) return
         
+        // Read selected quality preset from SecureStorage
+        val presetName = try {
+            secureStorage.selectedVideoQuality
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to read video quality, using default", e)
+            VideoQualityPreset.DEFAULT.name
+        }
+        val preset = try {
+            VideoQualityPreset.valueOf(presetName)
+        } catch (e: Exception) {
+            VideoQualityPreset.DEFAULT
+        }
+        Log.i(TAG, "Using video quality preset: ${preset.label} (${preset.resolution})")
+
+        // For MediaRecorder-based presets (LOW/VLOW), skip CameraX setup
+        if (preset.useMediaRecorder) {
+            Log.i(TAG, "Preset ${preset.label} uses MediaRecorder, skipping CameraX setup")
+            cameraReady.complete(Unit)
+            return
+        }
+
         serviceScope.launch(Dispatchers.Main) {
             cameraProvider = withContext(Dispatchers.IO) {
                 ProcessCameraProvider.getInstance(this@RecordingService).get()
             }
             
             val recorder = Recorder.Builder()
-                .setQualitySelector(QualitySelector.from(Quality.SD, FallbackStrategy.higherQualityOrLowerThan(Quality.SD)))
+                .setQualitySelector(QualitySelector.from(preset.cameraXQuality!!, FallbackStrategy.higherQualityOrLowerThan(preset.cameraXQuality)))
                 .setExecutor(Executors.newSingleThreadExecutor())
                 .build()
             
             videoCapture = VideoCapture.withOutput(recorder)
-            Log.i(TAG, "Camera setup complete, videoCapture ready")
+            Log.i(TAG, "Camera setup complete, videoCapture ready (${preset.label})")
             cameraReady.complete(Unit)
             updateCameraBinding()
         }
@@ -437,16 +466,27 @@ class RecordingService : LifecycleService() {
     }
 
     /**
-     * Video chunking: Records video in CHUNK_DURATION_MS intervals using CameraX.
-     * Each chunk is a self-contained MP4 file.
+     * Video chunking: Records video in CHUNK_DURATION_MS intervals.
+     * Uses CameraX for FHD/HD/SD, MediaRecorder for LOW/VLOW.
      */
     private fun startVideoChunking(recording: com.elysium.vanguard.recordshield.domain.model.Recording) {
+        val presetName = try {
+            secureStorage.selectedVideoQuality
+        } catch (e: Exception) {
+            VideoQualityPreset.DEFAULT.name
+        }
+        val preset = try {
+            VideoQualityPreset.valueOf(presetName)
+        } catch (e: Exception) {
+            VideoQualityPreset.DEFAULT
+        }
+
         chunkJob = serviceScope.launch {
             // Wait for camera to be ready before recording chunks
             Log.i(TAG, "Waiting for camera to be ready...")
             try {
                 withTimeout(10_000L) { cameraReady.await() }
-                Log.i(TAG, "Camera ready, starting video chunk recording")
+                Log.i(TAG, "Camera ready, starting video chunk recording (${preset.label})")
             } catch (e: Exception) {
                 Log.e(TAG, "Camera setup timed out or failed", e)
                 _isRecording.value = false
@@ -456,9 +496,13 @@ class RecordingService : LifecycleService() {
             while (isActive && _isRecording.value) {
                 val chunkFile = createChunkFile(recording.id, chunkIndex, "mp4")
                 try {
-                    recordVideoChunk(chunkFile)
+                    if (preset.useMediaRecorder) {
+                        recordVideoChunkMediaRecorder(chunkFile, preset)
+                    } else {
+                        recordVideoChunk(chunkFile)
+                    }
                     
-                    // Professional Sync Pulse: Wait for OS to flush video file (larger files need more time)
+                    // Professional Sync Pulse: Wait for OS to flush video file
                     var finalSize = 0L
                     var retries = 0
                     while (retries < 8 && finalSize == 0L) {
@@ -479,10 +523,9 @@ class RecordingService : LifecycleService() {
                             sha256Hash = hash
                         )
                         chunkRepository.insertChunk(chunk)
-                        Log.i(TAG, "Video chunk saved: ${finalSize} bytes, uploading directly...")
+                        Log.i(TAG, "Video chunk saved: ${finalSize} bytes (${preset.label}), uploading directly...")
 
-                        // Direct upload from service — no WorkManager delay
-                        // Uses uploadScope (not serviceScope) so uploads survive service destroy
+                        // Direct upload from service
                         val uploadJob = uploadScope.launch {
                             uploadChunkToCloud(chunk)
                         }
@@ -490,7 +533,7 @@ class RecordingService : LifecycleService() {
                         uploadJob.invokeOnCompletion { synchronized(pendingUploads) { pendingUploads.remove(uploadJob) } }
 
                         chunkIndex++
-                        updateNotification("Video active")
+                        updateNotification("Video active (${preset.label})")
                     } else {
                         Log.w(TAG, "Video chunk empty after sync - discarding")
                         chunkFile.delete()
@@ -574,6 +617,94 @@ class RecordingService : LifecycleService() {
         activeRec.stop()
         activeRecording = null
         finalizeDeferred.await()
+    }
+
+    /**
+     * Records a single video chunk using MediaRecorder directly.
+     * Used for LOW/VLOW presets where CameraX doesn't support custom resolutions.
+     * Uses Camera2 API to get a surface for MediaRecorder.
+     */
+    private suspend fun recordVideoChunkMediaRecorder(outputFile: File, preset: VideoQualityPreset) {
+        val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            android.media.MediaRecorder(this@RecordingService)
+        } else {
+            @Suppress("DEPRECATION")
+            android.media.MediaRecorder()
+        }.apply {
+            setVideoSource(android.media.MediaRecorder.VideoSource.SURFACE)
+            setAudioSource(android.media.MediaRecorder.AudioSource.MIC)
+            setOutputFormat(android.media.MediaRecorder.OutputFormat.MPEG_4)
+            setVideoEncoder(android.media.MediaRecorder.VideoEncoder.H264)
+            setAudioEncoder(android.media.MediaRecorder.AudioEncoder.AAC)
+            setVideoSize(preset.width, preset.height)
+            setVideoEncodingBitRate(preset.videoBitrate)
+            setVideoFrameRate(30)
+            setMaxDuration(CHUNK_DURATION_MS.toInt())
+            setOutputFile(outputFile.absolutePath)
+            prepare()
+        }
+
+        // Use Camera2 to create a surface for MediaRecorder
+        val cameraManager = getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
+        val cameraId = cameraManager.cameraIdList.firstOrNull() ?: throw IllegalStateException("No camera found")
+        val characteristics = cameraManager.getCameraCharacteristics(cameraId)
+        val map = characteristics.get(android.hardware.camera2.CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
+        val previewSize = map.getOutputSizes(android.graphics.ImageFormat.YUV_420_888).firstOrNull()
+            ?: android.util.Size(preset.width, preset.height)
+
+        val surface = recorder.surface ?: throw IllegalStateException("MediaRecorder surface is null")
+
+        val cameraDevice = CompletableDeferred<android.hardware.camera2.CameraDevice>()
+        cameraManager.openCamera(cameraId, object : android.hardware.camera2.CameraDevice.StateCallback() {
+            override fun onOpened(camera: android.hardware.camera2.CameraDevice) {
+                cameraDevice.complete(camera)
+            }
+            override fun onDisconnected(camera: android.hardware.camera2.CameraDevice) {
+                cameraDevice.completeExceptionally(IllegalStateException("Camera disconnected"))
+            }
+            override fun onError(camera: android.hardware.camera2.CameraDevice, error: Int) {
+                cameraDevice.completeExceptionally(IllegalStateException("Camera error: $error"))
+            }
+        }, android.os.Handler(android.os.Looper.getMainLooper()))
+
+        try {
+            val camera = cameraDevice.await()
+            val captureRequest = camera.createCaptureRequest(android.hardware.camera2.CameraDevice.TEMPLATE_RECORD).apply {
+                addTarget(surface)
+                set(android.hardware.camera2.CaptureRequest.CONTROL_MODE, android.hardware.camera2.CameraMetadata.CONTROL_MODE_AUTO)
+            }
+
+            recorder.start()
+
+            camera.createCaptureSession(
+                listOf(surface),
+                object : android.hardware.camera2.CameraCaptureSession.StateCallback() {
+                    override fun onConfigured(session: android.hardware.camera2.CameraCaptureSession) {
+                        session.setRepeatingRequest(captureRequest.build(), null, null)
+                    }
+                    override fun onConfigureFailed(session: android.hardware.camera2.CameraCaptureSession) {
+                        Log.e(TAG, "Camera capture session config failed")
+                    }
+                },
+                android.os.Handler(android.os.Looper.getMainLooper())
+            )
+
+            // Record for CHUNK_DURATION_MS
+            var timePassed = 0L
+            while (timePassed < CHUNK_DURATION_MS && _isRecording.value && currentCoroutineContext().isActive) {
+                delay(100)
+                timePassed += 100
+            }
+
+            try { recorder.stop() } catch (_: Exception) {}
+            camera.close()
+        } catch (e: Exception) {
+            Log.e(TAG, "MediaRecorder video chunk failed", e)
+            try { recorder.release() } catch (_: Exception) {}
+            throw e
+        }
+
+        try { recorder.release() } catch (_: Exception) {}
     }
 
     private fun stopRecordingInternal() {

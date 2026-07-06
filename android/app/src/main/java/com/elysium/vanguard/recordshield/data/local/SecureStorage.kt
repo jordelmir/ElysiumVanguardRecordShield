@@ -50,6 +50,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_GOOGLE_DRIVE_REFRESH_TOKEN = "gdrive_refresh_token"
         private const val KEY_SELECTED_CLOUD_PROVIDER = "selected_cloud_provider"
         private const val KEY_CONSENT_GIVEN = "consent_given"
+        private const val KEY_SELECTED_VIDEO_QUALITY = "selected_video_quality"
     }
 
     private val masterKey: MasterKey by lazy {
@@ -121,6 +122,18 @@ class SecureStorage @Inject constructor(
     var isConsentGiven: Boolean
         get() = encryptedPrefs.getBoolean(KEY_CONSENT_GIVEN, false)
         set(value) = encryptedPrefs.edit().putBoolean(KEY_CONSENT_GIVEN, value).apply()
+
+    // ========================================================================
+    // VIDEO QUALITY
+    // ========================================================================
+
+    /**
+     * Selected video quality preset name (e.g., "SD", "HD", "FHD").
+     * Falls back to "SD" if not set.
+     */
+    var selectedVideoQuality: String
+        get() = encryptedPrefs.getString(KEY_SELECTED_VIDEO_QUALITY, "SD") ?: "SD"
+        set(value) = encryptedPrefs.edit().putString(KEY_SELECTED_VIDEO_QUALITY, value).apply()
 
     // ========================================================================
     // PIN MANAGEMENT
