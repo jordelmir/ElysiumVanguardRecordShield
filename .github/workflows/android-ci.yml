@@ -28,13 +28,16 @@ jobs:
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
+        working-directory: android
 
       - name: Run Lint
         run: ./gradlew lint --no-daemon
+        working-directory: android
         continue-on-error: false
 
       - name: Build Debug APK
         run: ./gradlew assembleDebug --no-daemon
+        working-directory: android
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
@@ -61,9 +64,11 @@ jobs:
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
+        working-directory: android
 
       - name: Run Unit Tests
         run: ./gradlew testDebugUnitTest --no-daemon
+        working-directory: android
 
       - name: Upload Test Results
         if: always()
@@ -92,9 +97,11 @@ jobs:
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
+        working-directory: android
 
       - name: Build Release APK
         run: ./gradlew assembleRelease --no-daemon
+        working-directory: android
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
