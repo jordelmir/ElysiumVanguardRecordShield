@@ -100,6 +100,13 @@ android {
             excludes += "/META-INF/NOTICE.txt"
         }
     }
+
+    lint {
+        baseline = file("lint-baseline.xml")
+        abortOnError = false
+        xmlReport = true
+        htmlReport = true
+    }
 }
 
 // Forward tmpdir to KSP workers (Room SQLite verifier needs writable temp)
