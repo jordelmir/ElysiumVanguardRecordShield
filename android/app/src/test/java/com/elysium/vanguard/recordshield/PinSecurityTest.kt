@@ -2,18 +2,13 @@ package com.elysium.vanguard.recordshield
 
 import com.elysium.vanguard.recordshield.data.local.PinSecurity
 import org.junit.Assert.*
-import org.junit.Before
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
-/**
- * Unit tests for PinSecurity — PBKDF2 + AndroidKeyStore PIN hashing.
- *
- * Why these tests matter:
- *   - PIN is the primary auth gate for the evidence vault
- *   - A weak hash means an attacker can brute-force the PIN in seconds
- *   - PBKDF2 with 100K iterations + salt makes brute-force computationally expensive
- *   - Constant-time comparison prevents timing side-channel attacks
- */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [28])
 class PinSecurityTest {
 
     @Test
