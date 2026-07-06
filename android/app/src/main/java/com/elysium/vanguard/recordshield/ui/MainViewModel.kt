@@ -3,6 +3,7 @@ package com.elysium.vanguard.recordshield.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.elysium.vanguard.recordshield.data.local.SecureStorage
+import com.elysium.vanguard.recordshield.data.cloud.CloudStorageManager
 import com.elysium.vanguard.recordshield.data.remote.DeviceAlreadyRegisteredException
 import com.elysium.vanguard.recordshield.data.remote.DeviceRegistrationClient
 import com.elysium.vanguard.recordshield.domain.model.EvidenceChunk
@@ -32,6 +33,7 @@ class MainViewModel @Inject constructor(
     private val recordingRepository: RecordingRepository,
     private val chunkRepository: ChunkRepository,
     private val secureStorage: SecureStorage,
+    private val cloudStorageManager: CloudStorageManager,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -152,9 +154,20 @@ class MainViewModel @Inject constructor(
     }
 
     // ========================================================================
+    // CONSENT
+    // ========================================================================
+
+    fun isConsentGiven(): Boolean = secureStorage.isConsentGiven
+
+    fun setConsentGiven() {
+        secureStorage.isConsentGiven = true
+    }
+
+    // ========================================================================
     // CREDENTIALS
     // ========================================================================
 
     fun getDeviceId(): String? = secureStorage.deviceId
     fun getDeviceToken(): String? = secureStorage.deviceToken
+    fun getCloudStorageManager(): CloudStorageManager = cloudStorageManager
 }

@@ -1,7 +1,7 @@
 package com.elysium.vanguard.recordshield.data.remote
 
 import io.ktor.client.*
-import io.ktor.client.engine.cio.*
+import io.ktor.client.engine.okhttp.*
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
@@ -34,12 +34,15 @@ class DeviceRegistrationClient(
         isLenient = true
     }
 
-    private val client = HttpClient(CIO) {
+    private val client = HttpClient(OkHttp) {
         install(ContentNegotiation) {
             json(json)
         }
         engine {
-            requestTimeout = 15_000
+            config {
+                connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+                readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            }
         }
     }
 

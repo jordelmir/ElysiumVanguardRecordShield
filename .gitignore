@@ -6,6 +6,10 @@
 .env.production
 .env*.local
 
+# Logs
+*.log
+logs/
+
 # Node
 node_modules/
 dist/

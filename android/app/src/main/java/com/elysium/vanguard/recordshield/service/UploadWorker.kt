@@ -4,33 +4,41 @@ import android.content.Context
 import android.util.Log
 import androidx.hilt.work.HiltWorker
 import androidx.work.*
+import com.elysium.vanguard.recordshield.data.cloud.CloudStorageManager
+import com.elysium.vanguard.recordshield.data.cloud.CloudUploadException
+import com.elysium.vanguard.recordshield.data.local.SecureStorage
 import com.elysium.vanguard.recordshield.domain.model.UploadStatus
 import com.elysium.vanguard.recordshield.domain.repository.ChunkRepository
-import com.elysium.vanguard.recordshield.domain.repository.EvidenceUploadRepository
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import java.io.File
 import java.util.concurrent.TimeUnit
-import com.elysium.vanguard.recordshield.data.local.SecureStorage
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 
 /**
  * ============================================================================
- * UploadWorker — WorkManager-Based Evidence Upload
+ * UploadWorker — Cloud-Agnostic Evidence Upload via WorkManager
  * ============================================================================
  *
- * Why WorkManager over plain coroutines:
+ * Why WorkManager:
  *   - Survives process death (coroutines don't)
  *   - Resumes after device reboot
  *   - Applies exponential backoff automatically
- *   - Respects network constraints (only uploads on connected networks)
+ *   - Respects network constraints
  *   - Works within Android's battery optimization framework
  *
- * This is the LAST LINE OF DEFENSE for evidence preservation. Even if
- * the recording service is killed, pending chunks in the Room database
- * will be picked up and uploaded by WorkManager.
+ * Cloud Provider Support:
+ *   - Google Drive (primary, user-selected)
+ *   - Supabase (fallback)
+ *   - Automatic failover between providers
  *
- * Scheduling: Enqueued as a periodic worker that runs every 15 minutes
- * AND triggered immediately after each chunk is created.
+ * Upload Flow:
+ *   1. Query Room for pending chunks
+ *   2. For each chunk: read file → compute hash → upload via CloudStorageManager
+ *   3. Mark as UPLOADED on success, FAILED on error
+ *   4. Delete local file ONLY after successful upload (evidence preservation)
  * ============================================================================
  */
 @HiltWorker
@@ -38,7 +46,7 @@ class UploadWorker @AssistedInject constructor(
     @Assisted appContext: Context,
     @Assisted workerParams: WorkerParameters,
     private val chunkRepository: ChunkRepository,
-    private val uploadRepository: EvidenceUploadRepository,
+    private val cloudStorageManager: CloudStorageManager,
     private val secureStorage: SecureStorage
 ) : CoroutineWorker(appContext, workerParams) {
 
@@ -46,6 +54,14 @@ class UploadWorker @AssistedInject constructor(
         private const val TAG = "UploadWorker"
         private const val WORK_NAME_PERIODIC = "evidence_upload_periodic"
         private const val WORK_NAME_IMMEDIATE = "evidence_upload_immediate"
+
+        // Observable upload success events for UI confirmation
+        private val _uploadSuccessEvents = kotlinx.coroutines.flow.MutableSharedFlow<String>(extraBufferCapacity = 10)
+        val uploadSuccessEvents: kotlinx.coroutines.flow.SharedFlow<String> = _uploadSuccessEvents.asSharedFlow()
+
+        fun emitUploadSuccess(message: String) {
+            _uploadSuccessEvents.tryEmit(message)
+        }
 
         /**
          * Enqueue an immediate one-time upload attempt.
@@ -60,14 +76,15 @@ class UploadWorker @AssistedInject constructor(
                 .setConstraints(constraints)
                 .setBackoffCriteria(
                     BackoffPolicy.EXPONENTIAL,
-                    30, TimeUnit.SECONDS // Start retry at 30s, then 60s, 120s, etc.
+                    30, TimeUnit.SECONDS
                 )
+                .addTag("immediate_upload")
                 .build()
 
             WorkManager.getInstance(context)
                 .enqueueUniqueWork(
                     WORK_NAME_IMMEDIATE,
-                    ExistingWorkPolicy.APPEND_OR_REPLACE, // Don't drop pending uploads
+                    ExistingWorkPolicy.KEEP,
                     request
                 )
         }
@@ -89,21 +106,41 @@ class UploadWorker @AssistedInject constructor(
                     BackoffPolicy.EXPONENTIAL,
                     60, TimeUnit.SECONDS
                 )
+                .addTag("periodic_upload")
                 .build()
 
             WorkManager.getInstance(context)
                 .enqueueUniquePeriodicWork(
                     WORK_NAME_PERIODIC,
-                    ExistingPeriodicWorkPolicy.KEEP, // Don't restart if already scheduled
+                    ExistingPeriodicWorkPolicy.KEEP,
                     request
                 )
+        }
+
+        /**
+         * Cancel all pending upload work.
+         */
+        fun cancelAll(context: Context) {
+            WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME_IMMEDIATE)
+            WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME_PERIODIC)
         }
     }
 
     override suspend fun doWork(): Result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-        Log.i(TAG, "UploadWorker started — scanning for pending chunks")
+        Log.i(TAG, "=== UploadWorker doWork() START ===")
+
+        // Check if a cloud provider is configured
+        val providerReady = cloudStorageManager.isAnyProviderReady()
+        Log.i(TAG, "Cloud provider ready: $providerReady")
+
+        if (!providerReady) {
+            Log.w(TAG, "No cloud provider configured — skipping upload")
+            return@withContext Result.success()
+        }
 
         val pendingChunks = chunkRepository.getPendingChunks()
+        Log.i(TAG, "Pending chunks found: ${pendingChunks.size}")
+
         if (pendingChunks.isEmpty()) {
             Log.i(TAG, "No pending chunks to upload")
             return@withContext Result.success()
@@ -111,20 +148,12 @@ class UploadWorker @AssistedInject constructor(
 
         Log.i(TAG, "Found ${pendingChunks.size} pending chunks to upload")
 
-        // Phase 6: Top 1% Architecture - Secure Credentials from Hardware Vault
-        val deviceId = secureStorage.deviceId ?: run {
-            Log.e(TAG, "Device ID not found in SecureStorage")
-            return@withContext Result.failure()
-        }
-        val deviceToken = secureStorage.deviceToken ?: run {
-            Log.e(TAG, "Device Token not found in SecureStorage")
-            return@withContext Result.failure()
-        }
-
         var failedCount = 0
+        var uploadedCount = 0
 
         for (chunk in pendingChunks) {
             try {
+                Log.i(TAG, "Processing chunk ${chunk.chunkIndex} (id=${chunk.id}, path=${chunk.localPath})")
                 // Mark as UPLOADING
                 chunkRepository.updateChunkUploadStatus(chunk.id, UploadStatus.UPLOADING)
 
@@ -133,51 +162,55 @@ class UploadWorker @AssistedInject constructor(
                 if (!file.exists()) {
                     Log.w(TAG, "Chunk file missing: ${chunk.localPath}")
                     chunkRepository.updateChunkUploadStatus(chunk.id, UploadStatus.FAILED)
+                    failedCount++
                     continue
                 }
 
                 val chunkData = file.readBytes()
 
-                // Phase 6: Two-step upload: Vercel Orchestration -> Supabase direct PUT -> Vercel Registration
-                val storagePath = uploadRepository.uploadChunk(
-                    deviceId = deviceId,
-                    deviceToken = deviceToken,
+                // Upload via CloudStorageManager (routes to active provider)
+                val storagePath = cloudStorageManager.uploadChunk(
                     recordingId = chunk.recordingId,
                     chunkIndex = chunk.chunkIndex,
                     chunkData = chunkData,
-                    sha256Hash = chunk.sha256Hash,
                     mimeType = chunk.mimeType,
-                    durationMs = chunk.durationMs
+                    sha256Hash = chunk.sha256Hash
                 )
 
-                // Mark as UPLOADED in local database
+                // Mark as UPLOADED
                 chunkRepository.updateChunkUploadStatus(
                     chunk.id,
                     UploadStatus.UPLOADED,
                     storagePath
                 )
 
-                // REGLA DE ORO ANTI-PÉRDIDA:
-                // Only delete local file if the upload process (including registration) succeeded.
+                // CRITICAL: Only delete local file AFTER successful upload
                 if (file.delete()) {
-                    Log.i(TAG, "Chunk ${chunk.chunkIndex} uploaded successfully → Purged local file")
+                    Log.i(TAG, "Chunk uploaded — local file purged")
                 } else {
-                    Log.w(TAG, "Chunk ${chunk.chunkIndex} uploaded but could not delete local file at ${file.absolutePath}")
+                    Log.w(TAG, "Chunk uploaded but could not delete local file")
                 }
 
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to upload chunk ${chunk.chunkIndex}", e)
+                uploadedCount++
+                _uploadSuccessEvents.tryEmit("Chunk ${chunk.chunkIndex} uploaded to Drive")
+                Log.i(TAG, "Chunk ${chunk.chunkIndex} uploaded successfully ($uploadedCount/${pendingChunks.size})")
+
+            } catch (e: CloudUploadException) {
+                Log.e(TAG, "Cloud upload FAILED for chunk ${chunk.chunkIndex}: ${e.message}")
                 chunkRepository.updateChunkUploadStatus(chunk.id, UploadStatus.FAILED)
                 failedCount++
-                // DO NOT delete local file on failure — it stays for retry.
+            } catch (e: Exception) {
+                Log.e(TAG, "Unexpected error during upload for chunk ${chunk.chunkIndex}", e)
+                chunkRepository.updateChunkUploadStatus(chunk.id, UploadStatus.FAILED)
+                failedCount++
             }
         }
 
+        Log.i(TAG, "Upload complete: $uploadedCount succeeded, $failedCount failed")
+
         if (failedCount > 0) {
-            Log.w(TAG, "$failedCount chunks failed — will retry")
             Result.retry()
         } else {
-            Log.i(TAG, "All chunks uploaded successfully")
             Result.success()
         }
     }

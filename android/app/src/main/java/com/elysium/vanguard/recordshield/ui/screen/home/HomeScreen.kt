@@ -18,10 +18,14 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -39,9 +43,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.elysium.vanguard.recordshield.service.RecordingService
+import com.elysium.vanguard.recordshield.service.UploadWorker
 import com.elysium.vanguard.recordshield.ui.theme.*
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlin.math.sin
 import kotlin.random.Random
 import android.os.PowerManager
@@ -68,7 +77,8 @@ import com.elysium.vanguard.recordshield.domain.model.RecordingType
  */
 @Composable
 fun HomeScreen(
-    onNavigateToGallery: () -> Unit
+    onNavigateToGallery: () -> Unit,
+    onNavigateToCloudSettings: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val isRecording by RecordingService.isRecording.collectAsState()
@@ -89,6 +99,28 @@ fun HomeScreen(
     val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
     val isIgnoringBatteryOptimizations = powerManager.isIgnoringBatteryOptimizations(context.packageName)
 
+    // Upload success animation state
+    var uploadSuccessMessage by remember { mutableStateOf<String?>(null) }
+    val uploadSuccessAlpha = remember { Animatable(0f) }
+    val uploadSuccessSlideY = remember { Animatable(-100f) }
+    val uploadCoroutineScope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        UploadWorker.uploadSuccessEvents.collect { message ->
+            uploadSuccessMessage = message
+            uploadCoroutineScope.launch {
+                uploadSuccessSlideY.animateTo(0f, tween(400, easing = FastOutSlowInEasing))
+                uploadSuccessAlpha.animateTo(1f, tween(300))
+            }
+            delay(2500)
+            uploadCoroutineScope.launch {
+                uploadSuccessAlpha.animateTo(0f, tween(400))
+                uploadSuccessSlideY.animateTo(-100f, tween(400, easing = FastOutSlowInEasing))
+            }
+            uploadSuccessMessage = null
+        }
+    }
+
     // Strict OS-level back button interception
     BackHandler(enabled = isRecording) {
         // Prevent backing out of the app when actively recording for evidence integrity
@@ -103,6 +135,44 @@ fun HomeScreen(
         // Layer 1: Matrix Rain Background (subtle, opacated)
         MatrixRainBackground()
 
+        // Layer 2: Upload Success Banner
+        if (uploadSuccessMessage != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .graphicsLayer {
+                        alpha = uploadSuccessAlpha.value
+                        translationY = uploadSuccessSlideY.value
+                    }
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MatrixGreen.copy(alpha = 0.15f))
+                    .border(1.dp, MatrixGreen.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+                    .padding(12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CloudUpload,
+                        contentDescription = null,
+                        tint = MatrixGreen,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = uploadSuccessMessage ?: "",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MatrixGreen,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp
+                    )
+                }
+            }
+        }
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -113,7 +183,10 @@ fun HomeScreen(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             // Top Bar
-            TopBar(onNavigateToGallery = onNavigateToGallery)
+            TopBar(
+                onNavigateToGallery = onNavigateToGallery,
+                onNavigateToCloudSettings = onNavigateToCloudSettings
+            )
 
             Spacer(modifier = Modifier.height(24.dp))
 
@@ -210,11 +283,27 @@ fun HomeScreen(
 
 @Composable
 fun LivePreview(isRecording: Boolean, recordingType: RecordingType?, modifier: Modifier = Modifier) {
-    DisposableEffect(Unit) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var previewView by remember { mutableStateOf<PreviewView?>(null) }
+
+    DisposableEffect(lifecycleOwner, previewView) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_START || event == Lifecycle.Event.ON_RESUME) {
+                previewView?.let {
+                    RecordingService.previewSurfaceProvider = it.surfaceProvider
+                }
+            } else if (event == Lifecycle.Event.ON_PAUSE || event == Lifecycle.Event.ON_STOP) {
+                // When UI goes to background, detach surface so Service falls back to MockSurfaceProvider
+                RecordingService.previewSurfaceProvider = null
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
             RecordingService.previewSurfaceProvider = null
         }
     }
+
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(12.dp))
@@ -227,7 +316,8 @@ fun LivePreview(isRecording: Boolean, recordingType: RecordingType?, modifier: M
             factory = { ctx ->
                 PreviewView(ctx).apply {
                     this.scaleType = PreviewView.ScaleType.FILL_CENTER
-                    RecordingService.previewSurfaceProvider = this.surfaceProvider
+                    previewView = this
+                    // Initial setting will be handled by the Lifecycle Observer if already RESUMED
                 }
             },
             modifier = Modifier.fillMaxSize()
@@ -368,7 +458,7 @@ fun RecordButton(
         initialValue = 0.3f,
         targetValue = 0.8f,
         animationSpec = infiniteRepeatable(
-            animation = tween(1500, easing = EaseInOutSine),
+            animation = tween(1500, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "glowAlpha"
@@ -377,7 +467,7 @@ fun RecordButton(
         initialValue = 20f,
         targetValue = 40f,
         animationSpec = infiniteRepeatable(
-            animation = tween(1500, easing = EaseInOutSine),
+            animation = tween(1500, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "glowRadius"
@@ -395,13 +485,20 @@ fun RecordButton(
             modifier = Modifier
                 .size(buttonSize)
                 .drawBehind {
+                    // Core internal glow
                     drawCircle(
-                        color = buttonColor.copy(alpha = glowAlpha * 0.4f),
+                        color = buttonColor.copy(alpha = glowAlpha),
                         radius = size.minDimension / 2 + glowRadius
                     )
+                    // Structural aura
                     drawCircle(
-                        color = buttonColor.copy(alpha = glowAlpha * 0.2f),
-                        radius = size.minDimension / 2 + glowRadius * 1.5f
+                        color = buttonColor.copy(alpha = glowAlpha * 0.4f),
+                        radius = size.minDimension / 2 + glowRadius * 2f
+                    )
+                    // High-energy particles aura
+                    drawCircle(
+                        color = buttonColor.copy(alpha = glowAlpha * 0.15f),
+                        radius = size.minDimension / 2 + glowRadius * 3.5f
                     )
                 }
         )
@@ -474,41 +571,108 @@ fun RecordButton(
 
 @Composable
 fun MatrixRainBackground() {
-    val matrixChars = remember { "01アイウエオカキクケコ" }
-    val columns = 20
+    val matrixChars = remember { "01ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ" }
+    val columnCount = 20
+    
+    // Core neon palette for a more vibrant, cyberpunk/hacker feel
+    val neonColors = remember {
+        listOf(
+            Color(0xFF00FF00), // Matrix Green
+            Color(0xFF00FFFF), // Cyan
+            Color(0xFFFF00FF), // Magenta
+            Color(0xFFFFFF00)  // Yellow
+        )
+    }
+    
+    // Breathing pulsing background effect
+    val infiniteTransition = rememberInfiniteTransition(label = "breathe")
+    val bgGlow by infiniteTransition.animateFloat(
+        initialValue = 0.05f,
+        targetValue = 0.15f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(2000, easing = LinearOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "bg_breathe"
+    )
+
+    // Drop state: pair of (current Y position, speed), and a randomly assigned color index
     val drops = remember {
-        List(columns) { mutableStateOf(Random.nextFloat() * 100) }
+        List(columnCount) { 
+            Triple(
+                mutableStateOf(Random.nextFloat() * -50f), // Y
+                1f + Random.nextFloat() * 3f,             // Speed
+                Random.nextInt(neonColors.size)           // Color Index
+            ) 
+        }
     }
 
-    // Animate drops falling
     LaunchedEffect(Unit) {
         while (true) {
-            delay(100)
+            delay(30)
             drops.forEach { drop ->
-                drop.value = if (drop.value > 100) Random.nextFloat() * -10 else drop.value + 0.5f
+                val (yState, speed, _) = drop
+                val currentY = yState.value
+                yState.value = if (currentY > 110f) -10f else currentY + speed
             }
         }
     }
 
-    Canvas(
+    // Add a pulsing background gradient for the "breathing" effect
+    Box(
         modifier = Modifier
             .fillMaxSize()
-    ) {
-        val charSize = size.width / columns
-
-        drops.forEachIndexed { index, drop ->
-            val x = index * charSize
-            val y = (drop.value / 100f) * size.height
-
-            // Draw a fading trail of characters
-            for (trail in 0..5) {
-                val trailY = y - (trail * charSize * 1.5f)
-                if (trailY > 0 && trailY < size.height) {
-                    drawCircle(
-                        color = MatrixGreen.copy(alpha = (0.08f - trail * 0.012f).coerceAtLeast(0f)),
-                        radius = 2f,
-                        center = Offset(x + charSize / 2, trailY)
+            .drawBehind {
+                drawRect(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            MatrixGreen.copy(alpha = bgGlow),
+                            Color.Transparent
+                        ),
+                        center = Offset(size.width / 2, size.height / 2),
+                        radius = size.maxDimension
                     )
+                )
+            }
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val charSize = size.width / columnCount
+            val paint = android.graphics.Paint().apply {
+                textSize = charSize * 0.8f
+                typeface = android.graphics.Typeface.MONOSPACE
+                textAlign = android.graphics.Paint.Align.CENTER
+                isAntiAlias = true
+            }
+
+            drops.forEachIndexed { index, dropState ->
+                val x = index * charSize + charSize / 2
+                val (yState, _, colorIndex) = dropState
+                val currentYPercent = yState.value
+                val currentY = (currentYPercent / 100f) * size.height
+                
+                val dropColor = neonColors[colorIndex]
+
+                // Draw a trail of 15 characters
+                for (i in 0 until 18) {
+                    val trailY = currentY - (i * charSize * 1.2f)
+                    if (trailY < 0 || trailY > size.height) continue
+
+                    val alpha = (1f - i / 18f).coerceIn(0f, 1f)
+                    
+                    // Head is brighter white
+                    if (i == 0) {
+                        paint.color = Color.White.toArgb()
+                        paint.setShadowLayer(20f, 0f, 0f, dropColor.toArgb())
+                    } else {
+                        // Body takes the drop's assigned neon color
+                        paint.color = dropColor.copy(alpha = alpha * 0.8f).toArgb()
+                        // Keep a subtle shadow for the body for extra glow
+                        paint.setShadowLayer(8f, 0f, 0f, dropColor.copy(alpha = alpha * 0.5f).toArgb())
+                    }
+
+                    // Randomly change characters occasionally for "life"
+                    val char = matrixChars[Random.nextInt(matrixChars.length)].toString()
+                    drawContext.canvas.nativeCanvas.drawText(char, x, trailY, paint)
                 }
             }
         }
@@ -520,7 +684,7 @@ fun MatrixRainBackground() {
 // ============================================================================
 
 @Composable
-fun TopBar(onNavigateToGallery: () -> Unit) {
+fun TopBar(onNavigateToGallery: () -> Unit, onNavigateToCloudSettings: () -> Unit = {}) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -530,31 +694,63 @@ fun TopBar(onNavigateToGallery: () -> Unit) {
             Text(
                 text = "RECORD SHIELD",
                 style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
+                fontWeight = FontWeight.ExtraBold,
                 color = TextPrimary,
-                letterSpacing = 2.sp
+                letterSpacing = 4.sp,
+                modifier = Modifier.drawBehind {
+                    drawIntoCanvas { canvas ->
+                        val paint = android.graphics.Paint().apply {
+                            color = MatrixGreen.toArgb()
+                            maskFilter = android.graphics.BlurMaskFilter(15f, android.graphics.BlurMaskFilter.Blur.NORMAL)
+                        }
+                        canvas.nativeCanvas.drawText(
+                            "RECORD SHIELD",
+                            0f, 
+                            0f,
+                            paint
+                        )
+                    }
+                }
             )
             Text(
                 text = "ELYSIUM VANGUARD",
                 style = MaterialTheme.typography.labelSmall,
                 color = MatrixGreen,
-                letterSpacing = 3.sp
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 6.sp
             )
         }
 
-        // Gallery button
-        IconButton(
-            onClick = onNavigateToGallery,
-            modifier = Modifier
-                .clip(RoundedCornerShape(12.dp))
-                .background(GlassSurface)
-                .border(1.dp, GlassBorder, RoundedCornerShape(12.dp))
-        ) {
-            Icon(
-                imageVector = Icons.Default.VideoLibrary,
-                contentDescription = "Gallery",
-                tint = ElectricBlue
-            )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Cloud settings button
+            IconButton(
+                onClick = onNavigateToCloudSettings,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(GlassSurface)
+                    .border(1.dp, GlassBorder, RoundedCornerShape(12.dp))
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Cloud,
+                    contentDescription = "Cloud Settings",
+                    tint = ElectricBlue
+                )
+            }
+
+            // Gallery button
+            IconButton(
+                onClick = onNavigateToGallery,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(GlassSurface)
+                    .border(1.dp, GlassBorder, RoundedCornerShape(12.dp))
+            ) {
+                Icon(
+                    imageVector = Icons.Default.VideoLibrary,
+                    contentDescription = "Gallery",
+                    tint = ElectricBlue
+                )
+            }
         }
     }
 }
@@ -686,7 +882,15 @@ fun StatusCard(isRecording: Boolean) {
             .fillMaxWidth()
             .clip(RoundedCornerShape(20.dp))
             .background(GlassSurface)
-            .border(1.dp, GlassBorder, RoundedCornerShape(20.dp))
+            .border(
+                BorderStroke(
+                    1.dp,
+                    Brush.linearGradient(
+                        colors = listOf(MatrixGreenSubtle, MatrixGreen, MatrixGreenSubtle)
+                    )
+                ),
+                RoundedCornerShape(20.dp)
+            )
             .padding(20.dp)
     ) {
         Row(

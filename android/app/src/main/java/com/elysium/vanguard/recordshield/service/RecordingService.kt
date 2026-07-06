@@ -62,6 +62,31 @@ import javax.inject.Inject
 @AndroidEntryPoint
 class RecordingService : LifecycleService() {
 
+    @Inject lateinit var recordingRepository: RecordingRepository
+    @Inject lateinit var chunkRepository: ChunkRepository
+    @Inject lateinit var cloudStorageManager: com.elysium.vanguard.recordshield.data.cloud.CloudStorageManager
+
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // Dedicated scope for uploads — survives serviceScope.cancel() so uploads complete
+    private val uploadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val pendingUploads = mutableListOf<Job>()
+    private val cameraReady = CompletableDeferred<Unit>()
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var currentRecording: com.elysium.vanguard.recordshield.domain.model.Recording? = null
+    private var chunkIndex = 0
+    private var timerJob: Job? = null
+    private var chunkJob: Job? = null
+
+    // Audio recording with MediaRecorder
+    private var mediaRecorder: android.media.MediaRecorder? = null
+    private var isAudioMode = false
+    private var videoCapture: VideoCapture<Recorder>? = null
+    private var cameraProvider: ProcessCameraProvider? = null
+    private var previewUseCase: Preview? = null
+    private var activeRecording: androidx.camera.video.Recording? = null
+    private var isScreenOff = false
+    private val currentType: RecordingType? get() = _currentRecordingType.value
+
     companion object {
         private const val TAG = "RecordingService"
         const val ACTION_START_VIDEO = "com.elysium.vanguard.recordshield.ACTION_START_VIDEO"
@@ -73,22 +98,24 @@ class RecordingService : LifecycleService() {
 
         // Singleton state for UI observation
         private val _isRecording = MutableStateFlow(false)
-        val isRecording: StateFlow<Boolean> = _isRecording
+        val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
 
         private val _currentRecordingId = MutableStateFlow<String?>(null)
-        val currentRecordingId: StateFlow<String?> = _currentRecordingId
+        val currentRecordingId: StateFlow<String?> = _currentRecordingId.asStateFlow()
 
         private val _elapsedSeconds = MutableStateFlow(0L)
-        val elapsedSeconds: StateFlow<Long> = _elapsedSeconds
+        val elapsedSeconds: StateFlow<Long> = _elapsedSeconds.asStateFlow()
 
         private val _currentRecordingType = MutableStateFlow<RecordingType?>(null)
-        val currentRecordingType: StateFlow<RecordingType?> = _currentRecordingType
+        val currentRecordingType: StateFlow<RecordingType?> = _currentRecordingType.asStateFlow()
 
         // Static provider for Live Preview (Reactive)
         private val _previewSurfaceProvider = MutableStateFlow<Preview.SurfaceProvider?>(null)
         var previewSurfaceProvider: Preview.SurfaceProvider?
             get() = _previewSurfaceProvider.value
-            set(value) { _previewSurfaceProvider.value = value }
+            set(value) {
+                _previewSurfaceProvider.value = value
+            }
 
         fun startVideoRecording(context: Context) {
             val intent = Intent(context, RecordingService::class.java).apply {
@@ -111,37 +138,37 @@ class RecordingService : LifecycleService() {
             context.startService(intent)
         }
     }
-
-    @Inject lateinit var recordingRepository: RecordingRepository
-    @Inject lateinit var chunkRepository: ChunkRepository
-
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var wakeLock: PowerManager.WakeLock? = null
-    private var currentRecording: com.elysium.vanguard.recordshield.domain.model.Recording? = null
-    private var chunkIndex = 0
-    private var timerJob: Job? = null
-    private var chunkJob: Job? = null
-
-    // Audio recording with MediaRecorder
-    private var mediaRecorder: android.media.MediaRecorder? = null
-    private var isAudioMode = false
-    private var videoCapture: VideoCapture<Recorder>? = null
-    private var cameraProvider: ProcessCameraProvider? = null
-    private var previewUseCase: Preview? = null
-    private var activeRecording: androidx.camera.video.Recording? = null
-    private var isScreenOff = false
     
-    // Mock Surface for Zero-Interruption background recording
-    private var mockSurfaceTexture: android.graphics.SurfaceTexture? = null
-    private var mockSurface: android.view.Surface? = null
+    // Frame Sink for Zero-Interruption background recording
+    // Why: If a Surface is provided but not consumed (no compositor), some SoCs (Exynos, Kirin, Tensor)
+    // will detect the buffer pressure and pause the camera pipeline. We must "sink" the frames.
+    private var backgroundFrameSink: android.media.ImageReader? = null
+    private val backgroundExecutor = Executors.newSingleThreadExecutor()
+
     private val mockSurfaceProvider = Preview.SurfaceProvider { request ->
-        if (mockSurfaceTexture == null) {
-            mockSurfaceTexture = android.graphics.SurfaceTexture(0).apply {
-                setDefaultBufferSize(request.resolution.width, request.resolution.height)
-            }
-            mockSurface = android.view.Surface(mockSurfaceTexture)
+        val resolution = request.resolution
+        
+        // Cleanup old sink
+        backgroundFrameSink?.close()
+        
+        // Create a new ImageReader to act as a frame consumer
+        backgroundFrameSink = android.media.ImageReader.newInstance(
+            resolution.width, 
+            resolution.height, 
+            android.graphics.ImageFormat.YUV_420_888, 
+            3
+        ).apply {
+            setOnImageAvailableListener({ reader ->
+                try {
+                    val image = reader?.acquireLatestImage()
+                    image?.close() // Immediately consume and release
+                } catch (e: Exception) {
+                    Log.e(TAG, "Frame Sink failure", e)
+                }
+            }, android.os.Handler(android.os.Looper.getMainLooper()))
         }
-        request.provideSurface(mockSurface!!, ContextCompat.getMainExecutor(this@RecordingService)) {
+
+        request.provideSurface(backgroundFrameSink!!.surface, backgroundExecutor) {
             // No-op cleanup
         }
     }
@@ -270,11 +297,13 @@ class RecordingService : LifecycleService() {
             }
             
             val recorder = Recorder.Builder()
-                .setQualitySelector(QualitySelector.from(Quality.HD, FallbackStrategy.lowerQualityOrHigherThan(Quality.SD)))
+                .setQualitySelector(QualitySelector.from(Quality.SD, FallbackStrategy.higherQualityOrLowerThan(Quality.SD)))
                 .setExecutor(Executors.newSingleThreadExecutor())
                 .build()
             
             videoCapture = VideoCapture.withOutput(recorder)
+            Log.i(TAG, "Camera setup complete, videoCapture ready")
+            cameraReady.complete(Unit)
             updateCameraBinding()
         }
     }
@@ -293,10 +322,11 @@ class RecordingService : LifecycleService() {
                 val videoUseCase = if (isAudioMode) null else videoCapture
                 
                 // CRITICAL: Decide which surface provider to use. 
-                // We PREFER the UI surface, but fallback to Mock Surface if UI is gone/screen is off.
+                // We PREFER the UI surface, but fallback to Mock Surface if UI is gone, screen is off, or app is minimized.
                 val activeSurfaceProvider = if (!isScreenOff && uiSurfaceProvider != null) {
                     uiSurfaceProvider
                 } else {
+                    Log.d(TAG, "Using MockSurfaceProvider for background recording persistence")
                     mockSurfaceProvider
                 }
 
@@ -383,11 +413,20 @@ class RecordingService : LifecycleService() {
                             sha256Hash = hash
                         )
                         chunkRepository.insertChunk(chunk)
-                        Log.i(TAG, "Audio chunk $chunkIndex saved: $finalSize bytes")
+                        Log.i(TAG, "Audio chunk saved: ${finalSize} bytes, uploading directly...")
+                        
+                        // Direct upload from service — no WorkManager delay
+                        // Uses uploadScope (not serviceScope) so uploads survive service destroy
+                        val uploadJob = uploadScope.launch {
+                            uploadChunkToCloud(chunk)
+                        }
+                        synchronized(pendingUploads) { pendingUploads.add(uploadJob) }
+                        uploadJob.invokeOnCompletion { synchronized(pendingUploads) { pendingUploads.remove(uploadJob) } }
+
                         chunkIndex++
-                        updateNotification("Recording audio • Chunk $chunkIndex saved")
+                        updateNotification("Audio active")
                     } else {
-                        Log.w(TAG, "Audio chunk $chunkIndex was empty after sync - discarding")
+                        Log.w(TAG, "Audio chunk empty after sync - discarding")
                         chunkFile.delete()
                     }
                 } catch (e: Exception) {
@@ -403,6 +442,17 @@ class RecordingService : LifecycleService() {
      */
     private fun startVideoChunking(recording: com.elysium.vanguard.recordshield.domain.model.Recording) {
         chunkJob = serviceScope.launch {
+            // Wait for camera to be ready before recording chunks
+            Log.i(TAG, "Waiting for camera to be ready...")
+            try {
+                withTimeout(10_000L) { cameraReady.await() }
+                Log.i(TAG, "Camera ready, starting video chunk recording")
+            } catch (e: Exception) {
+                Log.e(TAG, "Camera setup timed out or failed", e)
+                _isRecording.value = false
+                return@launch
+            }
+
             while (isActive && _isRecording.value) {
                 val chunkFile = createChunkFile(recording.id, chunkIndex, "mp4")
                 try {
@@ -429,11 +479,20 @@ class RecordingService : LifecycleService() {
                             sha256Hash = hash
                         )
                         chunkRepository.insertChunk(chunk)
-                        Log.i(TAG, "Video chunk $chunkIndex saved: $finalSize bytes")
+                        Log.i(TAG, "Video chunk saved: ${finalSize} bytes, uploading directly...")
+
+                        // Direct upload from service — no WorkManager delay
+                        // Uses uploadScope (not serviceScope) so uploads survive service destroy
+                        val uploadJob = uploadScope.launch {
+                            uploadChunkToCloud(chunk)
+                        }
+                        synchronized(pendingUploads) { pendingUploads.add(uploadJob) }
+                        uploadJob.invokeOnCompletion { synchronized(pendingUploads) { pendingUploads.remove(uploadJob) } }
+
                         chunkIndex++
-                        updateNotification("Recording video • Chunk $chunkIndex saved")
+                        updateNotification("Video active")
                     } else {
-                        Log.w(TAG, "Video chunk $chunkIndex was empty after sync - discarding")
+                        Log.w(TAG, "Video chunk empty after sync - discarding")
                         chunkFile.delete()
                     }
                 } catch (e: Exception) {
@@ -449,7 +508,12 @@ class RecordingService : LifecycleService() {
      */
     private suspend fun recordAudioChunk(outputFile: File) {
         try {
-            mediaRecorder = android.media.MediaRecorder(this@RecordingService).apply {
+            mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                android.media.MediaRecorder(this@RecordingService)
+            } else {
+                @Suppress("DEPRECATION")
+                android.media.MediaRecorder()
+            }.apply {
                 setAudioSource(android.media.MediaRecorder.AudioSource.MIC)
                 setOutputFormat(android.media.MediaRecorder.OutputFormat.MPEG_4)
                 setAudioEncoder(android.media.MediaRecorder.AudioEncoder.AAC)
@@ -549,11 +613,9 @@ class RecordingService : LifecycleService() {
 
             releaseWakeLock()
             
-            // Cleanup Mock Surface
-            mockSurface?.release()
-            mockSurface = null
-            mockSurfaceTexture?.release()
-            mockSurfaceTexture = null
+            // Cleanup Background Frame Sink
+            backgroundFrameSink?.close()
+            backgroundFrameSink = null
 
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
@@ -586,8 +648,23 @@ class RecordingService : LifecycleService() {
         try { activeRecording?.stop() } catch (_: Exception) {}
         try { cameraProvider?.unbindAll() } catch (_: Exception) {}
         
+        backgroundFrameSink?.close()
+        backgroundFrameSink = null
+        backgroundExecutor.shutdown()
+
         releaseWakeLock()
+
+        // Cancel service scope (stops recording loops)
         serviceScope.cancel()
+
+        // DO NOT cancel uploadScope here — let pending uploads complete naturally.
+        // The process stays alive long enough (foreground service + WakeLock held
+        // until releaseWakeLock above completes) for the HTTP calls to finish.
+        // uploadScope uses SupervisorJob() so individual failures won't propagate.
+        val pendingCount = synchronized(pendingUploads) { pendingUploads.size }
+        if (pendingCount > 0) {
+            Log.i(TAG, "$pendingCount upload(s) still in progress — will complete in background")
+        }
     }
 
     // ========================================================================
@@ -649,18 +726,71 @@ class RecordingService : LifecycleService() {
     }
 
     private fun buildNotification(text: String): Notification {
-        return NotificationCompat.Builder(this, RecordShieldApplication.RECORDING_CHANNEL_ID)
-            .setContentTitle("🛡️ Record Shield Active")
-            .setContentText(text)
-            .setSmallIcon(android.R.drawable.ic_media_play)
-            .setOngoing(true) // Can't be swiped away
-            .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .build()
+        return StealthNotificationManager.buildStealthNotification(this, text)
     }
 
     private fun updateNotification(text: String) {
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.notify(NOTIFICATION_ID, buildNotification(text))
+        StealthNotificationManager.updateStealthNotification(this, NOTIFICATION_ID, text)
+    }
+
+    /**
+     * Direct upload from service — bypasses WorkManager entirely.
+     * The service is already a foreground service with a WakeLock,
+     * so it has all the resources needed for upload.
+     */
+    private suspend fun uploadChunkToCloud(chunk: EvidenceChunk) {
+        com.elysium.vanguard.recordshield.util.LogFile.log(TAG, "=== UPLOAD-START chunk=${chunk.chunkIndex} path=${chunk.localPath} mime=${chunk.mimeType} size=${chunk.sizeBytes}")
+        Log.e(TAG, "=== UPLOAD-START chunk=${chunk.chunkIndex} path=${chunk.localPath} mime=${chunk.mimeType} size=${chunk.sizeBytes}")
+        try {
+            val chunkFile = java.io.File(chunk.localPath)
+            if (!chunkFile.exists()) {
+                com.elysium.vanguard.recordshield.util.LogFile.log(TAG, "=== FILE MISSING: ${chunk.localPath}")
+                Log.e(TAG, "=== UPLOAD-FAIL: file does NOT exist: ${chunk.localPath}")
+                return
+            }
+            val chunkData = chunkFile.readBytes()
+            com.elysium.vanguard.recordshield.util.LogFile.log(TAG, "=== FILE-READ: ${chunkData.size} bytes")
+            Log.e(TAG, "=== UPLOAD-READ: ${chunkData.size} bytes from ${chunk.localPath}")
+
+            com.elysium.vanguard.recordshield.util.LogFile.log(TAG, "=== CALLING cloudStorageManager.uploadChunk...")
+            Log.e(TAG, "=== UPLOAD-CALL: cloudStorageManager.uploadChunk...")
+            val storagePath = cloudStorageManager.uploadChunk(
+                recordingId = chunk.recordingId,
+                chunkIndex = chunk.chunkIndex,
+                chunkData = chunkData,
+                mimeType = chunk.mimeType,
+                sha256Hash = chunk.sha256Hash
+            )
+            com.elysium.vanguard.recordshield.util.LogFile.log(TAG, "=== UPLOAD-OK storagePath=$storagePath")
+            Log.e(TAG, "=== UPLOAD-OK: chunk=${chunk.chunkIndex} storagePath=$storagePath")
+
+            chunkRepository.updateChunkUploadStatus(
+                chunk.id,
+                com.elysium.vanguard.recordshield.domain.model.UploadStatus.UPLOADED,
+                storagePath
+            )
+
+            java.io.File(chunk.localPath).delete()
+            com.elysium.vanguard.recordshield.util.LogFile.log(TAG, "=== UPLOAD-DONE chunk=${chunk.chunkIndex}")
+            Log.e(TAG, "=== UPLOAD-DONE: chunk=${chunk.chunkIndex} deleted local file")
+            com.elysium.vanguard.recordshield.service.UploadWorker.emitUploadSuccess("Chunk ${chunk.chunkIndex} uploaded to Drive")
+
+        } catch (e: com.elysium.vanguard.recordshield.data.cloud.CloudUploadException) {
+            com.elysium.vanguard.recordshield.util.LogFile.log(TAG, "=== UPLOAD-FAIL-Cloud: chunk=${chunk.chunkIndex} ${e.message}")
+            Log.e(TAG, "=== UPLOAD-ERROR-Cloud: chunk=${chunk.chunkIndex} ${e.message}")
+            chunkRepository.updateChunkUploadStatus(
+                chunk.id,
+                com.elysium.vanguard.recordshield.domain.model.UploadStatus.FAILED
+            )
+        } catch (e: Exception) {
+            com.elysium.vanguard.recordshield.util.LogFile.log(TAG, "=== UPLOAD-FAIL: chunk=${chunk.chunkIndex} ${e.javaClass.simpleName}: ${e.message}")
+            Log.e(TAG, "=== UPLOAD-ERROR: chunk=${chunk.chunkIndex} ${e.javaClass.simpleName}: ${e.message}", e)
+            chunkRepository.updateChunkUploadStatus(
+                chunk.id,
+                com.elysium.vanguard.recordshield.domain.model.UploadStatus.FAILED
+            )
+        }
+        com.elysium.vanguard.recordshield.util.LogFile.log(TAG, "=== UPLOAD-END chunk=${chunk.chunkIndex}")
+        Log.e(TAG, "=== UPLOAD-END: chunk=${chunk.chunkIndex}")
     }
 }

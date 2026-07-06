@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Privacy Policy — Record Shield</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1.7;
+            color: #e0e0e0;
+            background: #0a0a0f;
+            padding: 40px 20px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: #00ff41;
+            font-size: 2em;
+            margin-bottom: 10px;
+            letter-spacing: 2px;
+        }
+        h2 {
+            color: #00ff41;
+            font-size: 1.3em;
+            margin-top: 30px;
+            margin-bottom: 10px;
+            border-bottom: 1px solid #1c1c2b;
+            padding-bottom: 5px;
+        }
+        p { margin-bottom: 15px; color: #b0b0c0; }
+        .meta { color: #505060; font-size: 0.9em; margin-bottom: 30px; }
+        ul { margin-left: 20px; margin-bottom: 15px; }
+        li { color: #b0b0c0; margin-bottom: 5px; }
+        strong { color: #ffffff; }
+        a { color: #00f2ff; }
+    </style>
+</head>
+<body>
+
+<h1>RECORD SHIELD</h1>
+<p class="meta">Privacy Policy — Last updated: July 5, 2026</p>
+
+<h2>1. Introduction</h2>
+<p>Record Shield ("we", "our", "the app") is designed to protect individuals by providing secure, tamper-resistant audio and video evidence recording. This privacy policy explains how we handle your data.</p>
+
+<h2>2. Data We Collect</h2>
+<p><strong>We do NOT collect personal information.</strong> The app operates entirely on your device.</p>
+
+<h3>2.1 Data Stored Locally (On Your Device Only)</h3>
+<ul>
+    <li><strong>Audio/Video recordings:</strong> Stored exclusively in the app's private internal storage. They are invisible to other apps, file managers, and gallery applications.</li>
+    <li><strong>PIN hash:</strong> A cryptographically hashed version of your 6-digit PIN (PBKDF2 + AndroidKeyStore). Your actual PIN is never stored.</li>
+    <li><strong>Device registration token:</strong> If you choose to use cloud backup, a device-specific API token is stored encrypted.</li>
+</ul>
+
+<h3>2.2 Data Sent to Cloud (Only If You Configure It)</h3>
+<ul>
+    <li><strong>Evidence chunks:</strong> 10-second audio/video fragments are uploaded only to the cloud provider YOU select (Google Drive or Supabase). We do not operate any servers that store your recordings.</li>
+    <li><strong>Device fingerprint:</strong> A hashed identifier used to associate uploads with your device. This is a one-way hash and cannot be reversed.</li>
+</ul>
+
+<h2>3. How We Use Your Data</h2>
+<ul>
+    <li><strong>Local recording:</strong> Audio and video are captured and stored only on your device.</li>
+    <li><strong>Cloud backup (optional):</strong> If you enable cloud storage, encrypted fragments are uploaded to your chosen provider. This is entirely optional and user-controlled.</li>
+    <li><strong>We do NOT:</strong> Sell, share, analyze, profile, or monetize your data in any way.</li>
+    <li><strong>We do NOT:</strong> Use analytics, advertising, or tracking SDKs.</li>
+    <li><strong>We do NOT:</strong> Access your recordings unless you explicitly share them.</li>
+</ul>
+
+<h2>4. Permissions</h2>
+<p>The app requests the following permissions:</p>
+<ul>
+    <li><strong>CAMERA:</strong> Required for video evidence capture. Used only when you start a recording.</li>
+    <li><strong>RECORD_AUDIO:</strong> Required for audio evidence capture. Used only when you start a recording.</li>
+    <li><strong>FOREGROUND_SERVICE:</strong> Required by Android to keep recording active when the screen is off.</li>
+    <li><strong>INTERNET:</strong> Required only if you configure cloud backup.</li>
+    <li><strong>POST_NOTIFICATIONS:</strong> Required by Android 13+ for the foreground service notification.</li>
+</ul>
+<p>We do NOT request: location, contacts, files, SMS, phone state, or any other sensitive permissions.</p>
+
+<h2>5. Data Security</h2>
+<ul>
+    <li><strong>Encryption at rest:</strong> All sensitive data (PINs, tokens) are encrypted using Android Keystore (hardware-backed AES-256-GCM).</li>
+    <li><strong>Encryption in transit:</strong> All cloud communication uses TLS 1.3 (HTTPS).</li>
+    <li><strong>Integrity:</strong> Every evidence chunk is SHA-256 hashed. Any tampering is detectable.</li>
+    <li><strong>Isolation:</strong> Recordings are stored in app-private internal storage, invisible to other apps.</li>
+    <li><strong>No backups:</strong> Data extraction rules explicitly exclude all app data from device backups.</li>
+</ul>
+
+<h2>6. Cloud Storage Providers</h2>
+<p>If you configure cloud backup:</p>
+<ul>
+    <li><strong>Google Drive:</strong> Your recordings are stored in YOUR Google Drive account under a "RecordShield" folder. We do not have access to this data. Google's own privacy policy applies to data stored on their servers.</li>
+    <li><strong>Supabase:</strong> If you use the Supabase backend, your data is stored in a private bucket with Row Level Security. Only your device can access its own data.</li>
+</ul>
+
+<h2>7. Data Sharing</h2>
+<p>You can manually share recordings with others via the app's share function. This is entirely your choice. We do not share your data with any third parties.</p>
+
+<h2>8. Children's Privacy</h2>
+<p>The app is not directed at children under 13. We do not knowingly collect data from children.</p>
+
+<h2>9. Changes to This Policy</h2>
+<p>We may update this policy. Changes will be reflected in the app and on this page. Continued use of the app after changes constitutes acceptance.</p>
+
+<h2>10. Contact</h2>
+<p>For questions about this privacy policy, contact: <a href="mailto:privacy@recordshield.app">privacy@recordshield.app</a></p>
+
+<h2>11. Legal Basis (GDPR)</h2>
+<p>We process data based on:</p>
+<ul>
+    <li><strong>Consent:</strong> You explicitly grant camera, microphone, and notification permissions.</li>
+    <li><strong>Legitimate interest:</strong> The app's core purpose is personal safety and evidence preservation.</li>
+</ul>
+<p>You have the right to: access, delete, and export your data at any time through the app.</p>
+
+</body>
+</html>

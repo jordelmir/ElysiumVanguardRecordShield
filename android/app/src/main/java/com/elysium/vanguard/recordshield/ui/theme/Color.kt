@@ -17,48 +17,48 @@ import androidx.compose.ui.graphics.Color
  */
 
 // ============================================================================
-// BASE — Deep Space Background
+// BASE — Hyper-Deep Space Background
 // ============================================================================
-val DeepBlack = Color(0xFF0A0A0F)
-val DarkSurface = Color(0xFF12121A)
-val CardSurface = Color(0xFF1A1A26)
-val ElevatedSurface = Color(0xFF222233)
-val SubtleBorder = Color(0xFF2A2A3D)
+val DeepBlack = Color(0xFF050508)
+val DarkSurface = Color(0xFF0A0A0F)
+val CardSurface = Color(0xFF101018)
+val ElevatedSurface = Color(0xFF161622)
+val SubtleBorder = Color(0xFF1C1C2B)
 
 // ============================================================================
-// NEON ACCENTS — Masculine, Phosphorescent Energy
+// NEON ACCENTS — Matrix / Cyberpunk Palette
 // ============================================================================
-val MatrixGreen = Color(0xFF00FF41)          // Primary — Matrix-style bright green
-val MatrixGreenDim = Color(0xFF00CC33)       // Primary variant
-val MatrixGreenGlow = Color(0x6600FF41)      // Glow overlay (40% opacity)
-val MatrixGreenSubtle = Color(0x1A00FF41)    // Very subtle wash (10%)
+val MatrixGreen = Color(0xFF00FF41)          // Primary — Matrix Phosphorus
+val MatrixGreenDim = Color(0xFF003B00)       // Background variant
+val MatrixGreenGlow = Color(0x9900FF41)      // High-intensity glow
+val MatrixGreenSubtle = Color(0x3300FF41)    // Medium wash
 
-val ElectricBlue = Color(0xFF00D4FF)         // Secondary — electric cyan blue
-val ElectricBlueDim = Color(0xFF00A8CC)      // Secondary variant
-val ElectricBlueGlow = Color(0x6600D4FF)     // Glow overlay
+val ElectricBlue = Color(0xFF00F2FF)         // Secondary — Cyber Neon Blue
+val ElectricBlueDim = Color(0xFF001F26)      // Background variant
+val ElectricBlueGlow = Color(0x9900F2FF)     // High-intensity glow
 
-val DeepPurple = Color(0xFFBB86FC)           // Tertiary — royal purple
-val DeepPurpleDim = Color(0xFF9966CC)        // Tertiary variant
-val DeepPurpleGlow = Color(0x66BB86FC)       // Glow overlay
+val DeepPurple = Color(0xFFD300FF)           // Tertiary — Hyper Magenta
+val DeepPurpleDim = Color(0xFF1F0026)        // Background variant
+val DeepPurpleGlow = Color(0x99D300FF)       // High-intensity glow
 
 // ============================================================================
-// STATUS COLORS
+// STATUS COLORS — Overdrive Edition
 // ============================================================================
-val RecordingRed = Color(0xFFFF1744)         // Active recording indicator
-val RecordingRedGlow = Color(0x66FF1744)     // Red glow during recording
-val WarningAmber = Color(0xFFFFAB00)         // Upload pending / warnings
-val SuccessGreen = Color(0xFF00E676)         // Upload complete
+val RecordingRed = Color(0xFFFF003C)         // High-vis recording red
+val RecordingRedGlow = Color(0xCCFF003C)     // Pulsing red glow
+val WarningAmber = Color(0xFFFFD700)         // Gold warning
+val SuccessGreen = Color(0xFF00FF9D)         // Mint success
 
 // ============================================================================
 // TEXT
 // ============================================================================
-val TextPrimary = Color(0xFFE8E8F0)          // High-contrast white
-val TextSecondary = Color(0xFF9999B3)        // Muted grey
-val TextTertiary = Color(0xFF666680)         // Very muted
+val TextPrimary = Color(0xFFFFFFFF)          // Pure white
+val TextSecondary = Color(0xFFB0B0C0)        // Technical grey
+val TextTertiary = Color(0xFF505060)         // Muted dark
 
 // ============================================================================
-// GLASSMORPHISM
+// GLASSMORPHISM — Extreme Clarity
 // ============================================================================
-val GlassSurface = Color(0x1AFFFFFF)         // 10% white overlay
-val GlassBorder = Color(0x33FFFFFF)          // 20% white border
-val GlassHighlight = Color(0x0DFFFFFF)       // 5% white inner highlight
+val GlassSurface = Color(0x26FFFFFF)         // 15% white overlay
+val GlassBorder = Color(0x4DFFFFFF)          // 30% white border
+val GlassHighlight = Color(0x1AFFFFFF)       // 10% white inner highlight

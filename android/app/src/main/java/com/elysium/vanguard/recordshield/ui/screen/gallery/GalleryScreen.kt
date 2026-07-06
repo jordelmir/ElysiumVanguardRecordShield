@@ -42,7 +42,8 @@ fun GalleryScreen(
     recordings: List<Recording>,
     onRecordingClick: (Recording) -> Unit,
     onBackClick: () -> Unit,
-    onDeleteRecording: (Recording) -> Unit
+    onDeleteRecording: (Recording) -> Unit,
+    onShareRecording: ((Recording) -> Unit)? = null
 ) {
     val configuration = LocalConfiguration.current
     val isLargeScreen = configuration.screenWidthDp > 600
@@ -79,7 +80,8 @@ fun GalleryScreen(
                         recording = recording,
                         isLargeScreen = isLargeScreen,
                         onClick = { onRecordingClick(recording) },
-                        onDelete = { onDeleteRecording(recording) }
+                        onDelete = { onDeleteRecording(recording) },
+                        onShare = onShareRecording?.let { share -> { share(recording) } }
                     )
                 }
             }
@@ -134,7 +136,8 @@ fun RecordingCard(
     recording: Recording,
     isLargeScreen: Boolean,
     onClick: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onShare: (() -> Unit)? = null
 ) {
     val configuration = LocalConfiguration.current
     val isVideo = recording.type == RecordingType.VIDEO
@@ -251,13 +254,26 @@ fun RecordingCard(
                 }
             }
 
-            // Delete button
-            IconButton(onClick = onDelete) {
-                Icon(
-                    imageVector = Icons.Default.Delete,
-                    contentDescription = "Delete",
-                    tint = TextTertiary
-                )
+            // Actions row
+            Row {
+                // Share button
+                if (onShare != null) {
+                    IconButton(onClick = onShare) {
+                        Icon(
+                            imageVector = Icons.Default.Share,
+                            contentDescription = "Share",
+                            tint = ElectricBlue
+                        )
+                    }
+                }
+                // Delete button
+                IconButton(onClick = onDelete) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "Delete",
+                        tint = TextTertiary
+                    )
+                }
             }
         }
     }

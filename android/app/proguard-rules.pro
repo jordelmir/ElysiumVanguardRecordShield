@@ -37,3 +37,17 @@
 # Why: Hilt generates inject-able factories that must survive proguard.
 -keep class dagger.hilt.** { *; }
 -keep class * extends dagger.hilt.android.internal.managers.ViewComponentManager$FragmentContextWrapper { *; }
+
+# ============================================================================
+# GOOGLE PLAY SERVICES — Auth + Drive
+# ============================================================================
+-keep class com.google.android.gms.** { *; }
+-keep class com.google.api.client.** { *; }
+-dontwarn com.google.android.gms.**
+-dontwarn com.google.api.client.**
+
+# ============================================================================
+# KTOR CIO ENGINE
+# ============================================================================
+-keep class io.ktor.client.engine.cio.** { *; }
+-dontwarn io.ktor.client.engine.cio.**

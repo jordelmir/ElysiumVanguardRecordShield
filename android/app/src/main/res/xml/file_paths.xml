@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FileProvider paths for sharing evidence chunks.
+  Only exposes cacheDir (temp share files) and filesDir (recordings).
+-->
+<paths>
+    <cache-path
+        name="share_temp"
+        path="share_temp/" />
+    <files-path
+        name="recordings"
+        path="recordings/" />
+</paths>

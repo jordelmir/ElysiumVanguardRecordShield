@@ -1,7 +1,7 @@
 package com.elysium.vanguard.recordshield.data.remote
 
 import io.ktor.client.*
-import io.ktor.client.engine.cio.*
+import io.ktor.client.engine.okhttp.*
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.plugins.logging.*
 import io.ktor.client.request.*
@@ -38,19 +38,17 @@ class EvidenceApiClient(
         isLenient = true
     }
 
-    private val client = HttpClient(CIO) {
+    private val client = HttpClient(OkHttp) {
         install(ContentNegotiation) {
             json(json)
         }
         install(Logging) {
-            level = LogLevel.HEADERS // Why HEADERS not BODY: chunk binary bodies are massive
+            level = LogLevel.NONE
         }
-        // Why: Increase timeouts for large chunk uploads over slow connections
         engine {
-            requestTimeout = 30_000 // 30 seconds per chunk
-            endpoint {
-                connectTimeout = 10_000
-                keepAliveTime = 5_000
+            config {
+                connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
             }
         }
     }

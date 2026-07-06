@@ -10,6 +10,8 @@
 // why it's included.
 // ============================================================================
 
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -36,6 +38,24 @@ android {
         // Why: Build config field for the Vercel API URL.
         // This allows switching between dev/staging/prod without code changes.
         buildConfigField("String", "VERCEL_API_URL", "\"https://your-project.vercel.app\"")
+
+        // Load OAuth credentials from local.properties (gitignored)
+        val localPropsFile = rootProject.file("local.properties")
+        val oauthClientId: String
+        val oauthClientSecret: String
+        if (localPropsFile.exists()) {
+            val stream = localPropsFile.inputStream()
+            val props = Properties()
+            props.load(stream)
+            stream.close()
+            oauthClientId = props.getProperty("oauth.client.id", "")
+            oauthClientSecret = props.getProperty("oauth.client.secret", "")
+        } else {
+            oauthClientId = ""
+            oauthClientSecret = ""
+        }
+        buildConfigField("String", "OAUTH_CLIENT_ID", "\"$oauthClientId\"")
+        buildConfigField("String", "OAUTH_CLIENT_SECRET", "\"$oauthClientSecret\"")
     }
 
     buildTypes {
@@ -72,6 +92,12 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            excludes += "/META-INF/INDEX.LIST"
+            excludes += "/META-INF/DEPENDENCIES"
+            excludes += "/META-INF/LICENSE"
+            excludes += "/META-INF/LICENSE.txt"
+            excludes += "/META-INF/NOTICE"
+            excludes += "/META-INF/NOTICE.txt"
         }
     }
 }
@@ -167,7 +193,7 @@ dependencies {
     // support is superior.
     val ktorVersion = "3.0.3"
     implementation("io.ktor:ktor-client-core:$ktorVersion")
-    implementation("io.ktor:ktor-client-cio:$ktorVersion")
+    implementation("io.ktor:ktor-client-okhttp:$ktorVersion")
     implementation("io.ktor:ktor-client-content-negotiation:$ktorVersion")
     implementation("io.ktor:ktor-serialization-kotlinx-json:$ktorVersion")
     implementation("io.ktor:ktor-client-logging:$ktorVersion")
@@ -227,11 +253,24 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 
     // ========================================================================
+    // GOOGLE PLAY SERVICES — Drive API + Auth
+    // ========================================================================
+    // Why Play Services Auth: OAuth2 flow for Google Drive access.
+    // The device gets a scoped token to upload files to the user's Drive.
+    implementation("com.google.android.gms:play-services-auth:21.3.0")
+
+    // Why Google API Client: Legacy but stable Drive API access.
+    // Combined with REST API calls for actual file uploads.
+    implementation("com.google.api-client:google-api-client:2.7.2")
+    implementation("com.google.oauth-client:google-oauth-client-jetty:1.36.0")
+
+    // ========================================================================
     // CORE ANDROID
     // ========================================================================
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.core:core-splashscreen:1.0.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("androidx.activity:activity-ktx:1.9.3")
 
     // ========================================================================
     // TESTING

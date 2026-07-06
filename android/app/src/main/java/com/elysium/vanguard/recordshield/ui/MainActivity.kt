@@ -28,7 +28,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size as ComposeSize
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -43,18 +44,27 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.elysium.vanguard.recordshield.R
 import com.elysium.vanguard.recordshield.service.UploadWorker
+import com.elysium.vanguard.recordshield.ui.auth.GoogleDriveAuth
 import com.elysium.vanguard.recordshield.ui.screen.gallery.GalleryScreen
 import com.elysium.vanguard.recordshield.ui.screen.home.HomeScreen
+import com.elysium.vanguard.recordshield.ui.screen.home.MatrixRainBackground
 import com.elysium.vanguard.recordshield.ui.screen.pin.PinScreen
 import com.elysium.vanguard.recordshield.ui.screen.player.PlayerScreen
 import com.elysium.vanguard.recordshield.ui.screen.setup.SetupScreen
+import com.elysium.vanguard.recordshield.ui.screen.cloud.CloudSelectionScreen
+import com.elysium.vanguard.recordshield.ui.screen.consent.ConsentScreen
 import com.elysium.vanguard.recordshield.ui.theme.DeepBlack
 import com.elysium.vanguard.recordshield.ui.theme.MatrixGreen
 import com.elysium.vanguard.recordshield.ui.theme.RecordShieldTheme
+import com.elysium.vanguard.recordshield.data.share.SharingManager
 import dagger.hilt.android.AndroidEntryPoint
+import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * ============================================================================
@@ -71,8 +81,52 @@ class MainActivity : ComponentActivity() {
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        permissions.forEach { (permission, granted) ->
-            android.util.Log.i("MainActivity", "$permission: ${if (granted) "GRANTED" else "DENIED"}")
+        val granted = permissions.count { it.value }
+        val denied = permissions.count { !it.value }
+        android.util.Log.i("MainActivity", "Permissions: $granted granted, $denied denied")
+    }
+
+    // Google Sign-In launcher
+    private val googleSignInLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val task = com.google.android.gms.auth.api.signin.GoogleSignIn.getSignedInAccountFromIntent(result.data)
+        val account = GoogleDriveAuth.handleSignInResult(task)
+        if (account != null) {
+            val authCode = account.serverAuthCode
+            if (authCode != null) {
+                android.util.Log.i("MainActivity", "Got auth code, exchanging for tokens...")
+                // Exchange auth code for real access_token on background thread
+                kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                    val tokenResult = GoogleDriveAuth.exchangeAuthCodeForTokens(authCode, this@MainActivity)
+                    if (tokenResult != null) {
+                        val secureStorage = com.elysium.vanguard.recordshield.data.local.SecureStorage(this@MainActivity)
+                        secureStorage.googleDriveAccessToken = tokenResult.accessToken
+                        tokenResult.refreshToken?.let { secureStorage.googleDriveRefreshToken = it }
+                        secureStorage.selectedCloudProvider = "google_drive"
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            android.widget.Toast.makeText(
+                                this@MainActivity,
+                                "Google Drive connected: ${account.email}",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                        }
+                        android.util.Log.i("MainActivity", "Drive tokens saved for: ${account.email}")
+                    } else {
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            android.widget.Toast.makeText(
+                                this@MainActivity,
+                                "Token exchange failed. Check logs.",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+                }
+            } else {
+                android.widget.Toast.makeText(this, "No auth code received. Check Google Cloud Console config.", android.widget.Toast.LENGTH_LONG).show()
+            }
+        } else {
+            android.widget.Toast.makeText(this, "Google Sign-In failed or cancelled", android.widget.Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -89,7 +143,12 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = DeepBlack
                 ) {
-                    RecordShieldApp()
+                    RecordShieldApp(
+                        onGoogleDriveSetup = {
+                            val signInClient = GoogleDriveAuth.getSignInClient(this@MainActivity)
+                            googleSignInLauncher.launch(signInClient.signInIntent)
+                        }
+                    )
                 }
             }
         }
@@ -116,13 +175,19 @@ class MainActivity : ComponentActivity() {
  * Full navigation graph with PIN gating and Global Security Lockdown.
  */
 @Composable
-fun RecordShieldApp() {
+fun RecordShieldApp(
+    onGoogleDriveSetup: () -> Unit = {}
+) {
     val navController = rememberNavController()
     val viewModel: MainViewModel = hiltViewModel()
+    val context = LocalContext.current
 
     val recordings by viewModel.recordings.collectAsState()
     val isPinVerified by viewModel.isPinVerified.collectAsState()
     val selectedChunks by viewModel.selectedRecordingChunks.collectAsState()
+
+    // SharingManager instance
+    val sharingManager = remember { SharingManager(context) }
 
     // Professional Configuration: API Integration (Ready for secure configuration)
     LaunchedEffect(Unit) {
@@ -153,7 +218,11 @@ fun RecordShieldApp() {
     ) {
         composable("splash") {
             SplashScreen {
-                val destination = if (viewModel.isPinSet()) "home" else "setup"
+                val destination = when {
+                    !viewModel.isPinSet() -> "setup"
+                    !viewModel.isConsentGiven() -> "consent"
+                    else -> "home"
+                }
                 navController.navigate(destination) {
                     popUpTo("splash") { inclusive = true }
                 }
@@ -164,9 +233,23 @@ fun RecordShieldApp() {
             SetupScreen(
                 onPinSet = { pin ->
                     viewModel.setPin(pin)
-                    navController.navigate("home") {
+                    navController.navigate("consent") {
                         popUpTo("setup") { inclusive = true }
                     }
+                }
+            )
+        }
+
+        composable("consent") {
+            ConsentScreen(
+                onConsentGiven = {
+                    viewModel.setConsentGiven()
+                    navController.navigate("home") {
+                        popUpTo("consent") { inclusive = true }
+                    }
+                },
+                onDecline = {
+                    (context as? ComponentActivity)?.finish()
                 }
             )
         }
@@ -180,6 +263,9 @@ fun RecordShieldApp() {
                     } else {
                         navController.navigate("gallery")
                     }
+                },
+                onNavigateToCloudSettings = {
+                    navController.navigate("cloud_settings")
                 }
             )
         }
@@ -209,6 +295,9 @@ fun RecordShieldApp() {
                 },
                 onDeleteRecording = { recording ->
                     viewModel.deleteRecording(recording)
+                },
+                onShareRecording = { recording ->
+                    sharingManager.shareRecording(recording)
                 }
             )
         }
@@ -220,6 +309,20 @@ fun RecordShieldApp() {
                 chunks = selectedChunks,
                 onBackClick = {
                     navController.popBackStack()
+                }
+            )
+        }
+
+        composable("cloud_settings") {
+            val cloudManager = hiltViewModel<MainViewModel>().getCloudStorageManager()
+            CloudSelectionScreen(
+                cloudManager = cloudManager,
+                onBackClick = {
+                    navController.popBackStack()
+                },
+                onGoogleDriveSetup = onGoogleDriveSetup,
+                onSupabaseSetup = {
+                    // TODO: Launch Supabase registration flow
                 }
             )
         }
@@ -250,7 +353,7 @@ fun SplashScreen(onAnimationFinish: () -> Unit) {
         initialValue = 1f,
         targetValue = 1.08f,
         animationSpec = infiniteRepeatable(
-            animation = tween(2000, easing = EaseInOutSine),
+            animation = tween(2000, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "pulse"
@@ -261,10 +364,10 @@ fun SplashScreen(onAnimationFinish: () -> Unit) {
     val scaleAnim = remember { Animatable(0.8f) }
 
     LaunchedEffect(Unit) {
-        val alphaJob = launch { alphaAnim.animateTo(1f, tween(1500, easing = EaseOutQuart)) }
+        val alphaJob = launch { alphaAnim.animateTo(1f, tween(1500, easing = FastOutSlowInEasing)) }
         val scaleJob = launch { 
-            scaleAnim.animateTo(1.1f, tween(1200, easing = EaseOutBack))
-            scaleAnim.animateTo(1.0f, tween(800, easing = EaseInOutSine))
+            scaleAnim.animateTo(1.1f, tween(1200, easing = CubicBezierEasing(0.34f, 1.56f, 0.64f, 1f)))
+            scaleAnim.animateTo(1.0f, tween(800, easing = FastOutSlowInEasing))
         }
         
         joinAll(alphaJob, scaleJob)
@@ -278,6 +381,9 @@ fun SplashScreen(onAnimationFinish: () -> Unit) {
             .background(Color(0xFF010101)),
         contentAlignment = Alignment.Center
     ) {
+        // Futuristic breathing Matrix Rain background
+        MatrixRainBackground()
+
         // 1. DYNAMIC CYBER GRID
         Canvas(modifier = Modifier.fillMaxSize()) {
             val gridColor = MatrixGreen.copy(alpha = 0.05f)

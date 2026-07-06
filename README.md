@@ -1,120 +1,128 @@
-# 🛡️ Elysium Vanguard Record Shield
+# Record Shield
 
-> **Anti-sabotage emergency recording system with real-time cloud evidence preservation.**
+**Neo-futuristic Android evidence recording app with cloud backup and stealth mode.**
 
-[![Kotlin](https://img.shields.io/badge/Kotlin-2.1-7F52FF?logo=kotlin)](https://kotlinlang.org)
-[![Compose](https://img.shields.io/badge/Jetpack_Compose-Material3-4285F4?logo=android)](https://developer.android.com/jetpack/compose)
-[![Vercel](https://img.shields.io/badge/Vercel-Edge-000000?logo=vercel)](https://vercel.com)
-[![Supabase](https://img.shields.io/badge/Supabase-PostgreSQL-3FCF8E?logo=supabase)](https://supabase.com)
+## Architecture
 
----
-
-## 🎯 What Is This?
-
-Record Shield captures audio and video evidence and uploads it to the cloud **in real-time fragments (every 10 seconds)**. Even if the device is destroyed, confiscated, or the screen is locked, the recording process continues uninterrupted, and previously uploaded segments remain secure in Supabase Storage.
-
-### Key Features
-
-- 🔴 **1-Click Recording** — Instant start/stop with minimal latency.
-- 🔒 **Zero-Interruption Background Video** — Continuous recording even when the screen is off or locked via "Mock Surface Persistence".
-- ☁️ **Real-Time Cloud Sync** — Fragments uploaded via Vercel-mediated signed URLs to Supabase.
-- 📱 **Anti-Sabotage Lock** — PIN-protected UI; back button and system gestures disabled during active recording.
-- 🎨 **Premium Neo-Futuristic UI** — Matrix-inspired animations, glassmorphism, and high-contrast dark theme.
-- 🎬 **Internal Secure Gallery** — Encrypted local storage; playback is PIN-gated.
-
----
-
-## 🏗 Architecture
-
-```mermaid
-graph TD
-    A[Android App] -- Capture --> B[Recording Service]
-    B -- Chunking --> C[Local Cache]
-    C -- Req Signed URL --> D[Vercel API]
-    D -- Sign URL --> E[Supabase Storage]
-    B -- Direct PUT --> E
-    D -- Metadata --> F[Supabase DB]
+```
+┌─────────────────────────────────────────────────┐
+│                    UI Layer                      │
+│  HomeScreen → GalleryScreen → PlayerScreen      │
+│  SetupScreen → PinScreen → ConsentScreen        │
+│  CloudSelectionScreen                           │
+├─────────────────────────────────────────────────┤
+│                Domain Layer                      │
+│  RecordingRepository    ChunkRepository         │
+│  EvidenceUploadRepository                       │
+├─────────────────────────────────────────────────┤
+│              Data Layer                          │
+│  SecureStorage (EncryptedSharedPrefs)           │
+│  Room DB (Metadata) → Local File System         │
+│  CloudStorageManager → GoogleDrive / Supabase   │
+├─────────────────────────────────────────────────┤
+│             Service Layer                        │
+│  RecordingService (Foreground, Stealth)         │
+│  UploadWorker (WorkManager, Periodic)           │
+│  StealthNotificationManager                     │
+└─────────────────────────────────────────────────┘
 ```
 
----
+## Security Model
 
-## 📂 Project Structure
+- **PIN**: PBKDF2 (100K iterations) + AndroidKeyStore hardware-backed AES-256
+- **Storage**: All recordings in app-private internal storage (invisible to other apps)
+- **Encryption**: AES-256-GCM at rest (Android Keystore), TLS 1.3 in transit
+- **Integrity**: SHA-256 hash per chunk, tamper detection
+- **Stealth**: `IMPORTANCE_MIN` notifications, no visible indicators
+- **Consent**: Explicit consent screen before first recording
 
-- **`/android`**: Jetpack Compose application.
-  - `RecordingService`: Handles foreground lifecycle, CameraX integration, and background persistence.
-  - `EvidenceUploadRepository`: Manages the direct-to-cloud upload pipeline.
-- **`/vercel`**: API Gateway for security and metadata registration.
-  - `/api/get-upload-url`: Generates pre-signed Supabase URLs.
-  - `/api/register-chunk`: Finalizes metadata in the database.
-- **`/supabase`**: Database schema and storage bucket configuration.
+## Cloud Providers
 
----
+| Provider | Storage Location | Auth Method |
+|----------|-----------------|-------------|
+| Google Drive | User's own Drive folder | OAuth2 (drive.file scope) |
+| Supabase | Private bucket (RLS) | Device registration token |
 
-## 🚀 How to Build & Compile
+## Build
 
-### Prerequisites
+```bash
+cd android
+./gradlew assembleDebug    # Debug APK
+./gradlew assembleRelease  # Release APK
+```
 
-- Android Studio Ladybug (or newer)
-- JDK 17+
-- Vercel CLI (for backend deployment)
+## Key Dependencies
 
-### 1. Backend Setup
+- Jetpack Compose (Material3, Material Icons Extended)
+- CameraX (video/audio capture)
+- Media3 ExoPlayer (playback)
+- Room (metadata database)
+- Hilt (dependency injection)
+- WorkManager (background uploads)
+- Ktor CIO (HTTP client)
+- EncryptedSharedPreferences (secure storage)
+- Play Services Auth (Google Sign-In)
+- Google API Client (Drive REST API)
 
-1. Deploy the Supabase schema from `supabase/migrations/001_init_evidence_schema.sql`.
-2. Deploy the Vercel project:
+## Play Store Requirements
 
-    ```bash
-    cd vercel
-    vercel --prod
-    ```
+- [ ] Privacy Policy hosted at URL
+- [ ] Google Cloud Console OAuth2 credentials
+- [ ] `web_client_id` in `res/values/strings.xml`
+- [ ] Signed release APK with keystore
+- [ ] Store listing with screenshots
+- [ ] Content rating questionnaire
+- [ ] Data safety section
 
-3. Configure environment variables in Vercel: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`.
+## File Structure
 
-### 2. Android App Compilation
-
-1. Open the `android` folder in Android Studio.
-2. Sync Gradle dependencies.
-3. Build the APK:
-
-    ```bash
-    ./gradlew assembleDebug
-    ```
-
-4. Install the generated APK on your device.
-
----
-
-## 🔐 Security Model
-
-| Component | Description |
-|-----------|-------------|
-| **Transmission** | TLS 1.3 / HTTPS for all cloud communication. |
-| **Integrity** | SHA-256 hashing for every evidence chunk. |
-| **Persistence** | Foreground Service + WakeLock ensures recording doesn't stop on screen lock. |
-| **Isolation** | Evidence stored in `filesDir` (internal) - invisible to other apps or gallery. |
-
----
-
-## 📋 Development Status
-
-- [x] **Phase 1-4:** core infrastructure and UI.
-- [x] **Phase 5.1:** Zero-Interruption Background Recording (FIXED).
-- [x] **Phase 6:** Direct Cloud Sync with Vercel/Supabase (FIXED).
-
----
-
-## 🤝 Credits & Development
-
-**Lead Developer & Visionary:** [Jordelmir](https://github.com/jordelmir)
-
-Special thanks to the Elysium Vanguard engineering workflow for the high-end implementation of the Zero-Interruption recording logic and the secure cloud synchronization pipeline.
-
----
-
-## 📄 License
-
-Proprietary — All rights reserved.
-
----
-
-*Built with the highest engineering standards. Zero shortcuts. Zero garbage code.*
+```
+app/src/main/
+├── java/com/elysium/vanguard/recordshield/
+│   ├── RecordShieldApplication.kt
+│   ├── service/
+│   │   ├── RecordingService.kt
+│   │   ├── StealthNotificationManager.kt
+│   │   └── UploadWorker.kt
+│   ├── data/
+│   │   ├── local/
+│   │   │   ├── Database.kt
+│   │   │   ├── SecureStorage.kt
+│   │   │   └── PinSecurity.kt
+│   │   ├── remote/
+│   │   │   ├── EvidenceApiClient.kt
+│   │   │   └── DeviceRegistrationClient.kt
+│   │   ├── cloud/
+│   │   │   ├── CloudStorageProvider.kt
+│   │   │   ├── CloudStorageManager.kt
+│   │   │   ├── GoogleDriveClient.kt
+│   │   │   ├── GoogleDriveStorageProvider.kt
+│   │   │   └── SupabaseStorageProvider.kt
+│   │   ├── share/
+│   │   │   └── SharingManager.kt
+│   │   └── repository/
+│   │       └── RepositoryImpl.kt
+│   ├── ui/
+│   │   ├── MainActivity.kt
+│   │   ├── MainViewModel.kt
+│   │   ├── screen/
+│   │   │   ├── home/HomeScreen.kt
+│   │   │   ├── gallery/GalleryScreen.kt
+│   │   │   ├── player/PlayerScreen.kt
+│   │   │   ├── setup/SetupScreen.kt
+│   │   │   ├── pin/PinScreen.kt
+│   │   │   ├── consent/ConsentScreen.kt
+│   │   │   └── cloud/CloudSelectionScreen.kt
+│   │   ├── auth/GoogleDriveAuth.kt
+│   │   └── theme/Theme.kt
+│   ├── di/AppModule.kt
+│   └── domain/
+│       ├── model/Model.kt
+│       └── repository/Repository.kt
+├── res/
+│   ├── values/strings.xml
+│   └── xml/
+│       ├── file_paths.xml
+│       └── network_security_config.xml
+└── proguard-rules.pro
+```
