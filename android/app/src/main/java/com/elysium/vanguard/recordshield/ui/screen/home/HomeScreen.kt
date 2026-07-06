@@ -235,7 +235,8 @@ fun HomeScreen(
                 ModeSelector(
                     isLargeScreen = isLargeScreen,
                     onVideoSelected = { RecordingService.startVideoRecording(context) },
-                    onAudioSelected = { RecordingService.startAudioRecording(context) }
+                    onAudioSelected = { RecordingService.startAudioRecording(context) },
+                    onDualVideoSelected = { RecordingService.startDualVideoRecording(context) }
                 )
             }
 
@@ -864,7 +865,8 @@ fun RecordingTimer(elapsedSeconds: Long, isLargeScreen: Boolean) {
 fun ModeSelector(
     isLargeScreen: Boolean,
     onVideoSelected: () -> Unit,
-    onAudioSelected: () -> Unit
+    onAudioSelected: () -> Unit,
+    onDualVideoSelected: () -> Unit = {}
 ) {
     Row(
         horizontalArrangement = Arrangement.spacedBy(if (isLargeScreen) 16.dp else 8.dp)
@@ -885,6 +887,15 @@ fun ModeSelector(
             accentColor = DeepPurple,
             isLargeScreen = isLargeScreen,
             onClick = onAudioSelected
+        )
+
+        // Dual Camera mode
+        GlassButton(
+            icon = Icons.Default.CameraAlt,
+            label = "DUAL",
+            accentColor = MatrixGreen,
+            isLargeScreen = isLargeScreen,
+            onClick = onDualVideoSelected
         )
     }
 }

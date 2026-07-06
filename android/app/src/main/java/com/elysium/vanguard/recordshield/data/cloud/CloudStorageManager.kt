@@ -185,6 +185,30 @@ class CloudStorageManager @Inject constructor(
             0L
         }
     }
+
+    /**
+     * Upload a file with a custom name to a specific folder.
+     * Used for dual camera uploads (rear.mp4, front.mp4 in same chunk folder).
+     */
+    suspend fun uploadFileToFolder(
+        recordingId: String,
+        chunkIndex: Int,
+        fileName: String,
+        fileData: ByteArray,
+        mimeType: String,
+        sha256Hash: String
+    ): String {
+        val provider = getActiveProvider()
+        return when (provider) {
+            is GoogleDriveStorageProvider -> {
+                provider.uploadFileWithCustomName(recordingId, chunkIndex, fileName, fileData, mimeType, sha256Hash)
+            }
+            else -> {
+                // For other providers, use standard upload
+                provider.uploadChunk(recordingId, chunkIndex, fileData, mimeType, sha256Hash)
+            }
+        }
+    }
 }
 
 data class CloudProviderInfo(

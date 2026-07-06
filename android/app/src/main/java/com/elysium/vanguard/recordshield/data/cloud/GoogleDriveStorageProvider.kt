@@ -141,4 +141,61 @@ class GoogleDriveStorageProvider @Inject constructor(
         cachedRootFolderId = null
         cachedRecordingFolderIds.clear()
     }
+
+    /**
+     * Upload a file with a custom name to a recording folder.
+     * Used for dual camera uploads (rear.mp4, front.mp4).
+     */
+    suspend fun uploadFileWithCustomName(
+        recordingId: String,
+        chunkIndex: Int,
+        fileName: String,
+        fileData: ByteArray,
+        mimeType: String,
+        sha256Hash: String
+    ): String {
+        Log.e(TAG, "=== uploadFileWithCustomName START: recording=$recordingId, file=$fileName, size=${fileData.size}")
+        try {
+            // Get or create root folder
+            val rootFolderId = cachedRootFolderId ?: run {
+                val id = driveClient.getOrCreateRootFolder()
+                cachedRootFolderId = id
+                id
+            }
+
+            // Get or create recording subfolder
+            val recordingFolderId = cachedRecordingFolderIds[recordingId] ?: run {
+                val id = driveClient.getOrCreateRecordingFolder(rootFolderId, recordingId)
+                cachedRecordingFolderIds[recordingId] = id
+                id
+            }
+
+            // Create or get chunk subfolder (chunk_XXXXX/)
+            val chunkFolderName = "chunk_${String.format("%05d", chunkIndex)}"
+            val chunkFolderId = driveClient.getOrCreateSubfolder(recordingFolderId, chunkFolderName)
+
+            // Upload file with custom name
+            val fileId = driveClient.uploadFileToFolder(
+                folderId = chunkFolderId,
+                fileName = fileName,
+                fileData = fileData,
+                mimeType = mimeType
+            )
+
+            Log.e(TAG, "=== uploadFileWithCustomName DONE: $fileName → Drive fileID=$fileId")
+            return "drive://$fileId"
+
+        } catch (e: CloudUploadException) {
+            Log.e(TAG, "=== uploadFileWithCustomName CloudUploadException: ${e.message}", e)
+            if (e.message?.contains("401") == true || e.message?.contains("token") == true) {
+                if (driveClient.refreshAccessToken()) {
+                    return uploadFileWithCustomName(recordingId, chunkIndex, fileName, fileData, mimeType, sha256Hash)
+                }
+            }
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "=== uploadFileWithCustomName unexpected exception: ${e.javaClass.simpleName}: ${e.message}", e)
+            throw e
+        }
+    }
 }

@@ -94,11 +94,14 @@ class RecordingService : LifecycleService() {
     private var activeRecording: androidx.camera.video.Recording? = null
     private var isScreenOff = false
     private val currentType: RecordingType? get() = _currentRecordingType.value
+    private var dualCameraManager: DualCameraManager? = null
+    private var isDualCameraMode = false
 
     companion object {
         private const val TAG = "RecordingService"
         const val ACTION_START_VIDEO = "com.elysium.vanguard.recordshield.ACTION_START_VIDEO"
         const val ACTION_START_AUDIO = "com.elysium.vanguard.recordshield.ACTION_START_AUDIO"
+        const val ACTION_START_DUAL_VIDEO = "com.elysium.vanguard.recordshield.ACTION_START_DUAL_VIDEO"
         const val ACTION_STOP = "com.elysium.vanguard.recordshield.ACTION_STOP"
         const val ACTION_TOGGLE = "com.elysium.vanguard.recordshield.ACTION_TOGGLE"
         const val NOTIFICATION_ID = 1001
@@ -135,6 +138,13 @@ class RecordingService : LifecycleService() {
         fun startAudioRecording(context: Context) {
             val intent = Intent(context, RecordingService::class.java).apply {
                 action = ACTION_START_AUDIO
+            }
+            ContextCompat.startForegroundService(context, intent)
+        }
+
+        fun startDualVideoRecording(context: Context) {
+            val intent = Intent(context, RecordingService::class.java).apply {
+                action = ACTION_START_DUAL_VIDEO
             }
             ContextCompat.startForegroundService(context, intent)
         }
@@ -230,6 +240,7 @@ class RecordingService : LifecycleService() {
         when (intent?.action) {
             ACTION_START_VIDEO -> startRecording(RecordingType.VIDEO)
             ACTION_START_AUDIO -> startRecording(RecordingType.AUDIO)
+            ACTION_START_DUAL_VIDEO -> startRecording(RecordingType.VIDEO, dualCamera = true)
             ACTION_STOP -> stopRecordingInternal()
             ACTION_TOGGLE -> {
                 if (_isRecording.value) {
@@ -244,14 +255,16 @@ class RecordingService : LifecycleService() {
         return START_STICKY
     }
 
-    private fun startRecording(type: RecordingType) {
+    private fun startRecording(type: RecordingType, dualCamera: Boolean = false) {
         if (_isRecording.value) {
             Log.w(TAG, "Recording already in progress, ignoring start request")
             return
         }
 
+        isDualCameraMode = dualCamera
+        Log.i(TAG, "Starting recording: type=$type, dualCamera=$dualCamera")
+
         // Start foreground immediately to avoid ANR on Android 12+
-        // Explicitly declare camera and microphone types for Android 14+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
                 NOTIFICATION_ID, 
@@ -284,14 +297,17 @@ class RecordingService : LifecycleService() {
             // Start the timer
             startTimer()
             
-            // Setup Camera if possible (both Audio and Video should try to show preview if available)
-            setupCamera()
-
-            // Start chunked recording
-            if (isAudioMode) {
-                startAudioChunking(recording)
+            if (isDualCameraMode) {
+                // Dual camera mode uses Camera2 directly
+                startDualCameraChunking(recording)
             } else {
-                startVideoChunking(recording)
+                // Single camera mode
+                setupCamera()
+                if (isAudioMode) {
+                    startAudioChunking(recording)
+                } else {
+                    startVideoChunking(recording)
+                }
             }
         }
     }
@@ -462,6 +478,211 @@ class RecordingService : LifecycleService() {
                     Log.e(TAG, "Audio chunk $chunkIndex failed", e)
                 }
             }
+        }
+    }
+
+    /**
+     * Dual camera chunking: Records both front and rear cameras simultaneously.
+     * Each chunk creates a folder with rear.mp4 and front.mp4 inside.
+     */
+    private fun startDualCameraChunking(recording: com.elysium.vanguard.recordshield.domain.model.Recording) {
+        val presetName = try {
+            secureStorage.selectedVideoQuality
+        } catch (e: Exception) {
+            VideoQualityPreset.DEFAULT.name
+        }
+        val preset = try {
+            VideoQualityPreset.valueOf(presetName)
+        } catch (e: Exception) {
+            VideoQualityPreset.DEFAULT
+        }
+
+        chunkJob = serviceScope.launch {
+            Log.i(TAG, "Starting dual camera chunking with preset: ${preset.label}")
+
+            while (isActive && _isRecording.value) {
+                // Create chunk folder: recordings/{recordingId}/chunk_XXXXX/
+                val chunkDir = File(filesDir, "recordings/${recording.id}/chunk_${String.format("%05d", chunkIndex)}")
+                chunkDir.mkdirs()
+
+                val rearFile = File(chunkDir, "rear.mp4")
+                val frontFile = File(chunkDir, "front.mp4")
+
+                try {
+                    // Initialize DualCameraManager
+                    dualCameraManager = DualCameraManager(this@RecordingService)
+                    val readyDeferred = CompletableDeferred<Unit>()
+
+                    dualCameraManager!!.startDualRecording(
+                        preset = preset,
+                        rearOutput = rearFile,
+                        frontOutput = frontFile,
+                        onReady = {
+                            Log.i(TAG, "Dual cameras ready, recording started")
+                            readyDeferred.complete(Unit)
+                        },
+                        onError = { e ->
+                            Log.e(TAG, "Dual camera error", e)
+                            readyDeferred.completeExceptionally(e)
+                        }
+                    )
+
+                    // Wait for cameras to be ready
+                    withTimeout(10_000L) { readyDeferred.await() }
+
+                    // Record for CHUNK_DURATION_MS
+                    delay(CHUNK_DURATION_MS)
+
+                    // Stop recording
+                    val stopDeferred = CompletableDeferred<Unit>()
+                    dualCameraManager?.stopDualRecording {
+                        stopDeferred.complete(Unit)
+                    }
+                    withTimeout(5_000L) { stopDeferred.await() }
+
+                    // Sync pulse - wait for files to be written
+                    var rearSize = 0L
+                    var frontSize = 0L
+                    var retries = 0
+                    while (retries < 8 && (rearSize == 0L || frontSize == 0L)) {
+                        delay(200)
+                        rearSize = rearFile.length()
+                        frontSize = frontFile.length()
+                        retries++
+                    }
+
+                    if (rearFile.exists() && rearSize > 0 && frontFile.exists() && frontSize > 0) {
+                        val rearHash = computeSha256(rearFile)
+                        val frontHash = computeSha256(frontFile)
+
+                        // Create chunks for both cameras
+                        val rearChunk = EvidenceChunk(
+                            recordingId = recording.id,
+                            chunkIndex = chunkIndex,
+                            localPath = rearFile.absolutePath,
+                            sizeBytes = rearSize,
+                            durationMs = CHUNK_DURATION_MS.toInt(),
+                            mimeType = "video/mp4",
+                            sha256Hash = rearHash
+                        )
+
+                        val frontChunk = EvidenceChunk(
+                            recordingId = recording.id,
+                            chunkIndex = chunkIndex,
+                            localPath = frontFile.absolutePath,
+                            sizeBytes = frontSize,
+                            durationMs = CHUNK_DURATION_MS.toInt(),
+                            mimeType = "video/mp4",
+                            sha256Hash = frontHash
+                        )
+
+                        chunkRepository.insertChunk(rearChunk)
+                        chunkRepository.insertChunk(frontChunk)
+                        Log.i(TAG, "Dual chunks saved: rear=${rearSize}B, front=${frontSize}B, uploading...")
+
+                        // Upload both chunks (grouped by chunk index in Drive)
+                        val uploadJob = uploadScope.launch {
+                            uploadDualChunksToCloud(rearChunk, frontChunk, chunkIndex)
+                        }
+                        synchronized(pendingUploads) { pendingUploads.add(uploadJob) }
+                        uploadJob.invokeOnCompletion { synchronized(pendingUploads) { pendingUploads.remove(uploadJob) } }
+
+                        chunkIndex++
+                        updateNotification("Dual camera active")
+                    } else {
+                        Log.w(TAG, "Dual camera chunks empty after sync - discarding")
+                        rearFile.delete()
+                        frontFile.delete()
+                        chunkDir.delete()
+                    }
+
+                    // Cleanup
+                    dualCameraManager?.release()
+                    dualCameraManager = null
+
+                } catch (e: Exception) {
+                    Log.e(TAG, "Dual camera chunk $chunkIndex failed", e)
+                    dualCameraManager?.release()
+                    dualCameraManager = null
+                }
+            }
+        }
+    }
+
+    /**
+     * Upload dual camera chunks to cloud, grouped in the same folder.
+     */
+    private suspend fun uploadDualChunksToCloud(
+        rearChunk: EvidenceChunk,
+        frontChunk: EvidenceChunk,
+        chunkIdx: Int
+    ) {
+        com.elysium.vanguard.recordshield.util.LogFile.log(TAG, "=== DUAL-UPLOAD-START chunk=$chunkIdx")
+        Log.e(TAG, "=== DUAL-UPLOAD-START chunk=$chunkIdx")
+
+        try {
+            // Upload rear camera
+            val rearFile = java.io.File(rearChunk.localPath)
+            if (rearFile.exists()) {
+                val rearData = rearFile.readBytes()
+                val storagePath = cloudStorageManager.uploadFileToFolder(
+                    recordingId = rearChunk.recordingId,
+                    chunkIndex = chunkIdx,
+                    fileName = "rear.mp4",
+                    fileData = rearData,
+                    mimeType = rearChunk.mimeType,
+                    sha256Hash = rearChunk.sha256Hash
+                )
+                chunkRepository.updateChunkUploadStatus(
+                    rearChunk.id,
+                    com.elysium.vanguard.recordshield.domain.model.UploadStatus.UPLOADED,
+                    storagePath
+                )
+                rearFile.delete()
+                Log.i(TAG, "Rear chunk uploaded: $storagePath")
+            }
+
+            // Upload front camera
+            val frontFile = java.io.File(frontChunk.localPath)
+            if (frontFile.exists()) {
+                val frontData = frontFile.readBytes()
+                val storagePath = cloudStorageManager.uploadFileToFolder(
+                    recordingId = frontChunk.recordingId,
+                    chunkIndex = chunkIdx,
+                    fileName = "front.mp4",
+                    fileData = frontData,
+                    mimeType = frontChunk.mimeType,
+                    sha256Hash = frontChunk.sha256Hash
+                )
+                chunkRepository.updateChunkUploadStatus(
+                    frontChunk.id,
+                    com.elysium.vanguard.recordshield.domain.model.UploadStatus.UPLOADED,
+                    storagePath
+                )
+                frontFile.delete()
+                Log.i(TAG, "Front chunk uploaded: $storagePath")
+            }
+
+            // Clean up chunk folder
+            val chunkDir = rearFile.parentFile
+            chunkDir?.delete()
+
+            com.elysium.vanguard.recordshield.util.LogFile.log(TAG, "=== DUAL-UPLOAD-DONE chunk=$chunkIdx")
+            Log.e(TAG, "=== DUAL-UPLOAD-DONE chunk=$chunkIdx")
+
+            com.elysium.vanguard.recordshield.service.UploadWorker.emitUploadSuccess("Dual camera chunk $chunkIdx uploaded")
+
+        } catch (e: Exception) {
+            com.elysium.vanguard.recordshield.util.LogFile.log(TAG, "=== DUAL-UPLOAD-FAIL chunk=$chunkIdx ${e.message}")
+            Log.e(TAG, "=== DUAL-UPLOAD-FAIL chunk=$chunkIdx ${e.message}", e)
+            chunkRepository.updateChunkUploadStatus(
+                rearChunk.id,
+                com.elysium.vanguard.recordshield.domain.model.UploadStatus.FAILED
+            )
+            chunkRepository.updateChunkUploadStatus(
+                frontChunk.id,
+                com.elysium.vanguard.recordshield.domain.model.UploadStatus.FAILED
+            )
         }
     }
 
@@ -712,6 +933,7 @@ class RecordingService : LifecycleService() {
 
         _isRecording.value = false
         _currentRecordingType.value = null
+        isDualCameraMode = false
         timerJob?.cancel()
 
         // We do NOT cancel chunkJob immediately. 
@@ -720,6 +942,16 @@ class RecordingService : LifecycleService() {
         serviceScope.launch {
             chunkJob?.join()
             
+            // Cleanup dual camera if active
+            if (dualCameraManager != null) {
+                try {
+                    dualCameraManager?.release()
+                    dualCameraManager = null
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error releasing dual camera manager", e)
+                }
+            }
+
             withContext(Dispatchers.Main) {
                 try {
                     cameraProvider?.unbindAll()

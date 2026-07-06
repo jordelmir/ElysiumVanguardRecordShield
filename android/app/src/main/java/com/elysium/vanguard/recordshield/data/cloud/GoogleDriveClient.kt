@@ -254,6 +254,60 @@ class GoogleDriveClient @Inject constructor(
         }
     }
 
+    /**
+     * Get or create a subfolder within a parent folder.
+     * Used for chunk folders (chunk_00001/) in dual camera mode.
+     */
+    suspend fun getOrCreateSubfolder(parentFolderId: String, folderName: String): String {
+        val searchQuery = "name='$folderName' and mimeType='$MIME_FOLDER' and '$parentFolderId' in parents and trashed=false"
+        val encodedQuery = URLEncoder.encode(searchQuery, "UTF-8")
+        val searchResponse: HttpResponse = client.get(
+            "$DRIVE_API_BASE/files?q=$encodedQuery&fields=files(id,name)"
+        ) {
+            header("Authorization", "Bearer ${getAccessToken()}")
+        }
+
+        if (searchResponse.status == HttpStatusCode.OK) {
+            val body = json.parseToJsonElement(searchResponse.bodyAsText()) as JsonObject
+            val filesStr = body["files"]?.toString() ?: "[]"
+            if (filesStr.contains("id")) {
+                val fileArray = json.parseToJsonElement(filesStr) as kotlinx.serialization.json.JsonArray
+                if (fileArray.isNotEmpty()) {
+                    val firstFile = fileArray[0] as JsonObject
+                    return firstFile["id"]?.jsonPrimitive?.content
+                        ?: createSubfolder(parentFolderId, folderName)
+                }
+            }
+        }
+
+        return createSubfolder(parentFolderId, folderName)
+    }
+
+    private suspend fun createSubfolder(parentFolderId: String, folderName: String): String {
+        val metadata = JsonObject(mapOf(
+            "name" to kotlinx.serialization.json.JsonPrimitive(folderName),
+            "mimeType" to kotlinx.serialization.json.JsonPrimitive(MIME_FOLDER),
+            "parents" to kotlinx.serialization.json.JsonPrimitive(parentFolderId)
+        ))
+
+        val response: HttpResponse = client.post("$DRIVE_API_BASE/files") {
+            header("Authorization", "Bearer ${getAccessToken()}")
+            contentType(ContentType.Application.Json)
+            setBody(metadata.toString())
+        }
+
+        if (response.status == HttpStatusCode.OK) {
+            val body = json.parseToJsonElement(response.bodyAsText()) as JsonObject
+            return body["id"]?.jsonPrimitive?.content
+                ?: throw CloudUploadException("Failed to create subfolder", "google_drive")
+        } else {
+            throw CloudUploadException(
+                "Failed to create subfolder: ${response.status}",
+                "google_drive"
+            )
+        }
+    }
+
     // ========================================================================
     // FILE UPLOAD
     // ========================================================================
@@ -327,6 +381,86 @@ class GoogleDriveClient @Inject constructor(
                     if (refreshAccessToken()) {
                         Log.e(TAG, "Token refreshed, retrying upload...")
                         return@withContext uploadChunkFile(folderId, chunkIndex, chunkData, mimeType)
+                    }
+                }
+                throw CloudUploadException(
+                    "Upload failed: HTTP $status — $responseBody",
+                    "google_drive",
+                    isRetryable = status != 401
+                )
+            }
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /**
+     * Upload a file to a Drive folder with a custom filename.
+     * Used for dual camera uploads (rear.mp4, front.mp4).
+     */
+    suspend fun uploadFileToFolder(
+        folderId: String,
+        fileName: String,
+        fileData: ByteArray,
+        mimeType: String
+    ): String = withContext(Dispatchers.IO) {
+        com.elysium.vanguard.recordshield.util.LogFile.log(TAG, "=== uploadFileToFolder: $fileName (${fileData.size} bytes) → folder $folderId")
+        Log.e(TAG, "=== uploadFileToFolder: $fileName (${fileData.size} bytes) → folder $folderId")
+
+        val token = getAccessToken()
+        val boundary = "----RecordShield${System.currentTimeMillis()}"
+        val metadataJson = """{"name":"$fileName","parents":["$folderId"]}"""
+
+        val uploadUrl = java.net.URL(
+            "$UPLOAD_API_BASE/files?uploadType=multipart&addParents=$folderId&fields=id,name,size,parents"
+        )
+
+        val conn = uploadUrl.openConnection() as java.net.HttpURLConnection
+        try {
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Authorization", "Bearer $token")
+            conn.setRequestProperty("Content-Type", "multipart/related; boundary=$boundary")
+            conn.doOutput = true
+            conn.connectTimeout = 15_000
+            conn.readTimeout = 60_000
+
+            conn.outputStream.use { os ->
+                os.write("--$boundary\r\n".toByteArray())
+                os.write("Content-Type: application/json; charset=UTF-8\r\n\r\n".toByteArray())
+                os.write(metadataJson.toByteArray(Charsets.UTF_8))
+                os.write("\r\n".toByteArray())
+                os.write("--$boundary\r\n".toByteArray())
+                os.write("Content-Type: $mimeType\r\n\r\n".toByteArray())
+                os.write(fileData)
+                os.write("\r\n--$boundary--\r\n".toByteArray())
+                os.flush()
+            }
+
+            val status = conn.responseCode
+            com.elysium.vanguard.recordshield.util.LogFile.log(TAG, "=== uploadFileToFolder HTTP: $status")
+            Log.e(TAG, "=== uploadFileToFolder HTTP: $status")
+
+            val responseBody = if (status in 200..299) {
+                conn.inputStream.bufferedReader().readText()
+            } else {
+                conn.errorStream?.bufferedReader()?.readText() ?: "empty"
+            }
+
+            if (status in 200..299) {
+                val jsonBody = json.parseToJsonElement(responseBody) as JsonObject
+                val fileId = jsonBody["id"]?.jsonPrimitive?.content
+                    ?: throw CloudUploadException("Upload succeeded but no file ID", "google_drive")
+                val parents = jsonBody["parents"]?.toString() ?: "unknown"
+                com.elysium.vanguard.recordshield.util.LogFile.log(TAG, "=== uploadFileToFolder SUCCESS: $fileName → fileID=$fileId, parents=$parents")
+                Log.e(TAG, "=== uploadFileToFolder SUCCESS: $fileName → fileID=$fileId, parents=$parents")
+                fileId
+            } else {
+                Log.e(TAG, "=== uploadFileToFolder FAILED: HTTP $status — $responseBody")
+                com.elysium.vanguard.recordshield.util.LogFile.log(TAG, "=== uploadFileToFolder FAILED: HTTP $status — $responseBody")
+                if (status == 401) {
+                    if (refreshAccessToken()) {
+                        Log.e(TAG, "Token refreshed, retrying upload...")
+                        return@withContext uploadFileToFolder(folderId, fileName, fileData, mimeType)
                     }
                 }
                 throw CloudUploadException(
