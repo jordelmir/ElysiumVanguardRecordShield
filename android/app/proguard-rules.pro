@@ -51,3 +51,11 @@
 # ============================================================================
 -keep class io.ktor.client.engine.cio.** { *; }
 -dontwarn io.ktor.client.engine.cio.**
+
+# ============================================================================
+# APACHE HTTP (used by Google API client)
+# ============================================================================
+-dontwarn org.apache.http.**
+-dontwarn org.ietf.jgss.**
+-dontwarn org.apache.http.auth.**
+-dontwarn org.apache.http.impl.auth.**
